@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ifpsdasm-wrapper: modern .NET 8 front-end for IFPSLib (IFPSTools.NET).
+
+    This tool is NOT part of the main solution: building it requires the
+    third-party IFPSLib project, which scripts/bootstrap.ps1 (-WithTools)
+    clones into .work/third-party/IFPSTools.NET. Point IfpsLibProject at an
+    alternative checkout if needed:
+
+      dotnet build tools/ifpsdasm-wrapper/ifpsdasm-wrapper.sln \
+        -p:IfpsLibProject=C:/path/to/IFPSTools.NET/IFPSLib/IFPSLib.csproj
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>ifpsdasm-wrapper</AssemblyName>
+    <RootNamespace>IfpsDasmWrapper</RootNamespace>
+    <Version>0.1.0</Version>
+    <IfpsLibProject Condition="'$(IfpsLibProject)' == ''">$(MSBuildThisFileDirectory)../../.work/third-party/IFPSTools.NET/IFPSLib/IFPSLib.csproj</IfpsLibProject>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(IfpsLibProject)')">
+    <ProjectReference Include="$(IfpsLibProject)" />
+  </ItemGroup>
+
+  <Target Name="EnsureIfpsLibExists" BeforeTargets="Build;Publish">
+    <Error Condition="!Exists('$(IfpsLibProject)')"
+           Text="IFPSLib was not found at '$(IfpsLibProject)'. Run 'pwsh scripts/bootstrap.ps1 -WithTools' first (it clones IFPSTools.NET into .work/third-party)." />
+  </Target>
+
+</Project>
