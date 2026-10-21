@@ -277,13 +277,21 @@ Given one public world, the resolver
 performs the exact request chain a fresh public client performs:
 
 1. **Locate the Firebase web API key at runtime** (never stored in this repo):
-   CLI `--firebase-api-key`, or scan of the user's local artifacts
-   (`--il2cpp-dump <dir>/stringliteral.json`, then
-   `--client-package <dir>/**/global-metadata.dat` and the Unity serialized
-   data `*_Data/resources.assets` — the observed October 2026 carrier —
-   looking for the AIza-shaped value). Ambiguous (multiple distinct values)
-   ⇒ hard error with instructions. The key is a public, client-shipped
-   project identifier, not a secret — but the repo still refuses to vendor it.
+   CLI/GUI `--firebase-api-key`, or scan of the user's local artifacts
+   (`--il2cpp-dump <dir>/stringliteral.json`, then the Unity serialized
+   data `*_Data/resources.assets` — the observed October 2026 carrier — plus
+   `*_Data/**/global-metadata.dat`, looking for the AIza-shaped value).
+   The package directory can be passed explicitly (`--client-package <dir>`)
+   or is auto-discovered from the user's own machine (`ClientPackageLocator`:
+   the working-tree `.work/client-package` convention, the registry uninstall
+   entry the cluster installer wrote (HKEY_CURRENT_USER / HKEY_LOCAL_MACHINE
+   `...\Uninstall`, including `WOW6432Node`, matching "cluster" in the key or
+   display name with an `InstallLocation`), and well-known
+   `%LOCALAPPDATA%\Programs\cluster*` / Program Files directories; every
+   candidate is verified to actually contain those Unity data files before
+   use). Ambiguous (multiple distinct values) ⇒ hard error with
+   instructions. The key is a public, client-shipped project identifier,
+   not a secret — but the repo still refuses to vendor it.
 2. **Anonymous Firebase sign-in** (same REST call as every fresh client
    install): `POST
    https://www.googleapis.com/identitytoolkit/v3/relyingparty/signupNewUser?key=<webApiKey>`
@@ -321,7 +329,12 @@ performs the exact request chain a fresh public client performs:
 6. **Download**: the plain HTTP file downloader fetches each bundle into
    `output/<worldId>/bundles/…` and writes `downloads-manifest.json`
    (same pipeline as the public-metadata stages; URLs are absolute and
-   unauthenticated exactly as the client fetches them).
+   unauthenticated exactly as the client fetches them). The manifest records
+   per file a `fileFormat` column — `unityfs-plain` when the leading bytes
+   are `55 6E 69 74 79 46 53 00` (`"UnityFS\0"`, a plain Unity asset bundle)
+   or `unknown-probably-encrypted` otherwise (possibly
+   `AesAssetDecryptor`-encrypted; saved as-is, never transformed) — and a
+   lowercase-hex `sha256` integrity column.
 
 Live end-to-end verification (October 2026): with the key located from a
 local `*_Data/resources.assets`, the whole chain above succeeded against
@@ -331,7 +344,11 @@ the production API for the public sample world
 (`assets=[]`, `subScenes=[]` for this venue), downloaded 118,100,853
 bytes, file header `UnityFS` (a plain Unity asset bundle; venues whose
 bundles are `AesAssetDecryptor`-encrypted stay encrypted and are saved
-as-is).
+as-is). The same flow also runs unattended through the Windows GUI
+(`cluster-map-downloader-gui.exe <url> -o <dir> --auto-close`), which
+shares `GuestEntryResolverFactory` with the CLI and reports per-file,
+byte-level progress; its manifest labeled the bundle
+`fileFormat: unityfs-plain`.
 
 ### 8.2 The guarantees this mode keeps
 

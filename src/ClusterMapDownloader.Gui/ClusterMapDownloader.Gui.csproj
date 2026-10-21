@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Keeps the Windows target buildable on non-Windows CI runners too. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ClusterMapDownloader.Gui</RootNamespace>
+    <AssemblyName>cluster-map-downloader-gui</AssemblyName>
+    <AssemblyTitle>cluster-map-downloader GUI</AssemblyTitle>
+    <Product>cluster-map-downloader</Product>
+    <Description>Unofficial research tool: paste a cluster.mu world URL and download its venue AssetBundles through the normal public client guest flow. Not affiliated with Cluster, Inc.</Description>
+    <Version>0.1.0</Version>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClusterMapDownloader\ClusterMapDownloader.csproj" />
+  </ItemGroup>
+
+</Project>

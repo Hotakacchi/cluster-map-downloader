@@ -47,7 +47,15 @@ It does **not** fake a completed download.
 - Venue resolution and metadata reporting (venue ID, venue size, world
   type, privacy type, SDK type/version, creator, thumbnails).
 - Generic, tested asset download/manifest plumbing (used by the opt-in mode
-  and ready for future resolvers).
+  and ready for future resolvers); every downloaded file is classified by its
+  leading bytes (`fileFormat`: `unityfs-plain` vs `unknown-probably-encrypted`)
+  and hashed (`sha256`, manifest integrity column) — plain labeling only,
+  never decryption.
+- A paste-a-URL Windows GUI (`cluster-map-downloader-gui.exe`, Japanese UI):
+  enter the world URL, press ダウンロード, watch byte-level progress; the
+  public client-shipped identifier is auto-discovered from an installed
+  cluster client, tokens stay in memory, and refusal outcomes are reported
+  honestly (no circumvention).
 - Reusable PowerShell bootstrap / installer-extraction / binary-analysis
   scripts for the research workflow.
 - `ifpsdasm-wrapper`, a small .NET 8 tool that turns the Cluster installer's
@@ -93,7 +101,9 @@ provide, the tool stops at that point and says so.
 ## Requirements
 
 - Windows 10/11 (the project itself is cross-platform; the research
-  artifacts being analyzed are Windows binaries).
+  artifacts being analyzed are Windows binaries). The GUI additionally
+  requires Windows with .NET 8 Desktop Runtime available either directly or
+  via a SDK install (the bootstrap publishes it locally; no installer).
 - [.NET SDK 8.0](https://dotnet.microsoft.com/download) or a newer SDK
   (e.g. 9.x can build the `net8.0` targets).
 - PowerShell 7 (`pwsh`) recommended; scripts are largely compatible with
@@ -105,7 +115,7 @@ provide, the tool stops at that point and says so.
 
 ## Usage
 
-### 1. Bootstrap (build + publish CLI)
+### 1. Bootstrap (build + publish CLI and GUI)
 
 ```powershell
 pwsh .\scripts\bootstrap.ps1
@@ -166,7 +176,29 @@ What this mode does / does not do (details:
 * you are responsible for complying with cluster's Terms of Service and for
   respecting creators' rights (see [Legal](#legal--content-notice)).
 
-### 4. CLI equivalent
+### 4. GUI (Windows, paste-a-URL)
+
+`bootstrap.ps1` also publishes a small WinForms GUI to
+`artifacts-local\gui\cluster-map-downloader-gui.exe` (Japanese UI). It always
+runs the explicit opt-in guest-entry flow described above — that is the GUI's
+whole purpose — with the same policies: single world, in-memory tokens,
+honest refusal handling, as-is encrypted bytes.
+
+1. Launch `cluster-map-downloader-gui.exe`.
+2. Paste `https://cluster.mu/w/<WORLD_ID>`.
+3. Press **ダウンロード**; progress (per-file, byte-level) and a log are shown.
+4. Files land in the chosen 保存先 (`output\<worldId>\bundles\` by default);
+   the manifest lists `fileFormat` + `sha256` per file. **保存フォルダを開く**
+   opens the world directory.
+
+Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
+--auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
+exits when the run finishes. The public client-shipped Firebase identifier is
+discovered automatically from the locally installed cluster client
+(registry-declared install location / well-known dirs); there is nothing else
+to configure.
+
+### 5. CLI equivalent
 
 ```text
 artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> -o .\output
@@ -182,7 +214,7 @@ implemented (default, no-flag behavior), `3` usage error,
 `5` delivery refused beyond the guest boundary (reported with the server's
 masked reason, never bypassed).
 
-### 5. Installer / client research scripts
+### 6. Installer / client research scripts
 
 ```powershell
 # Third-party tools (fetched at runtime into .work/third-party; never vendored)

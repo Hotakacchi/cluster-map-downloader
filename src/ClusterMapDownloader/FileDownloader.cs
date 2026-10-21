@@ -7,6 +7,13 @@ public sealed record DownloadedFile
     public required string AbsolutePath { get; init; }
     public required long Bytes { get; init; }
     public required string Url { get; init; }
+
+    /// <summary>Leading-byte classification (unityfs-plain / unknown-probably-encrypted);
+    /// honest labeling only — non-plain files are saved as-is, never decrypted.</summary>
+    public required string FileFormat { get; init; }
+
+    /// <summary>Lowercase hex SHA-256 of the saved file (manifest integrity column).</summary>
+    public required string Sha256 { get; init; }
 }
 
 /// <summary>
@@ -57,14 +64,16 @@ public static class FileDownloader
     /// Downloads one asset into <paramref name="outputDirectory"/>, retrying
     /// transient failures. Writes to a <c>.part</c> temp file first and moves
     /// it into place on success. Skips files already present with the
-    /// expected size.
+    /// expected size. Byte deltas flow into <paramref name="byteProgress"/>
+    /// when the caller passes one; the saved file is classified and hashed.
     /// </summary>
     public static async Task<DownloadedFile> DownloadToAsync(
         HttpClient client,
         AssetDownload asset,
         string outputDirectory,
         IProgressNotifier notifier,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<DownloadByteProgress>? byteProgress = null)
     {
         var fileName = SanitizeRelativeFileName(asset.RelativeFileName);
         var targetPath = Path.Combine(outputDirectory, fileName);
@@ -76,13 +85,7 @@ public static class FileDownloader
             if (existing.Length == expected)
             {
                 notifier.Info($"Already present, skipping (size matches): {fileName} ({expected} bytes).");
-                return new DownloadedFile
-                {
-                    RelativeFileName = fileName,
-                    AbsolutePath = targetPath,
-                    Bytes = expected,
-                    Url = asset.Url.ToString(),
-                };
+                return DescribeFile(fileName, targetPath, expected, asset.Url.ToString(), notifier);
             }
         }
 
@@ -98,21 +101,27 @@ public static class FileDownloader
                     .ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
+                var totalBytes = response.Content.Headers.ContentLength;
                 await using (var targetStream = File.Create(partPath))
+                using (var sourceStream = await response.Content
+                           .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    await response.Content.CopyToAsync(targetStream, cancellationToken).ConfigureAwait(false);
+                    var buffer = new byte[1024 * 512];
+                    long written = 0;
+                    int read;
+                    while ((read = await sourceStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                    {
+                        await targetStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
+                            .ConfigureAwait(false);
+                        written += read;
+                        byteProgress?.Report(new DownloadByteProgress(written, totalBytes));
+                    }
                 }
 
                 File.Move(partPath, targetPath, overwrite: true);
                 var bytes = new FileInfo(targetPath).Length;
-                notifier.Success($"Downloaded {fileName} ({FormatBytes(bytes)} bytes) -> {targetPath}");
-                return new DownloadedFile
-                {
-                    RelativeFileName = fileName,
-                    AbsolutePath = targetPath,
-                    Bytes = bytes,
-                    Url = asset.Url.ToString(),
-                };
+                notifier.Success($"Downloaded {fileName} ({FormatBytes(bytes)}) -> {targetPath}");
+                return DescribeFile(fileName, targetPath, bytes, asset.Url.ToString(), notifier);
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException)
             {
@@ -129,27 +138,53 @@ public static class FileDownloader
             $"Failed to download {asset.Url} after {MaxAttempts} attempts: {lastError?.Message}", lastError);
     }
 
+    private static DownloadedFile DescribeFile(string fileName, string absolutePath, long bytes, string url,
+        IProgressNotifier notifier)
+    {
+        var format = AssetFileFormatInspector.Inspect(absolutePath);
+        var sha256 = AssetFileFormatInspector.ComputeSha256(absolutePath);
+        notifier.Info($"   format: {AssetFileFormatInspector.Describe(format)}  sha256: {sha256[..12]}…");
+        return new DownloadedFile
+        {
+            RelativeFileName = fileName,
+            AbsolutePath = absolutePath,
+            Bytes = bytes,
+            Url = url,
+            FileFormat = AssetFileFormatInspector.ToManifestValue(format),
+            Sha256 = sha256,
+        };
+    }
+
     /// <summary>Downloads a batch of assets sequentially, reporting progress.</summary>
     public static async Task<IReadOnlyList<DownloadedFile>> DownloadAllAsync(
         HttpMessageHandler handler,
         IReadOnlyList<AssetDownload> assets,
         string outputDirectory,
         IProgressNotifier notifier,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<DownloadedFileProgress>? fileProgress = null)
     {
         var results = new List<DownloadedFile>();
         using var client = new HttpClient(handler);
         client.Timeout = Timeout.InfiniteTimeSpan; // per-request concern; long streams must not be cut short
-        foreach (var asset in assets)
+        for (var index = 0; index < assets.Count; index++)
         {
+            var asset = assets[index];
             cancellationToken.ThrowIfCancellationRequested();
-            results.Add(await DownloadToAsync(client, asset, outputDirectory, notifier, cancellationToken)
+            fileProgress?.Report(new DownloadedFileProgress(asset.RelativeFileName, index + 1, assets.Count, null));
+            var byteProgress = new Progress<DownloadByteProgress>(p =>
+                fileProgress?.Report(new DownloadedFileProgress(asset.RelativeFileName, index + 1, assets.Count, p)));
+            results.Add(await DownloadToAsync(client, asset, outputDirectory, notifier, cancellationToken,
+                    byteProgress)
                 .ConfigureAwait(false));
+            fileProgress?.Report(new DownloadedFileProgress(asset.RelativeFileName, index + 1, assets.Count,
+                new DownloadByteProgress(1, 1)));
         }
+
         return results;
     }
 
-    internal static string FormatBytes(long bytes)
+    public static string FormatBytes(long bytes)
     {
         string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
         double value = bytes;
@@ -162,3 +197,14 @@ public static class FileDownloader
         return FormattableString.Invariant($"{value:0.##} {units[unit]}");
     }
 }
+
+/// <summary>Byte-level download progress: the bytes written so far plus the
+/// response's total size when the server advertised one (null otherwise).</summary>
+public readonly record struct DownloadByteProgress(long DownloadedBytes, long? TotalBytes);
+
+/// <summary>Coarse (per-file) + fine (byte-level) progress snapshot across a batch.</summary>
+public readonly record struct DownloadedFileProgress(
+    string RelativeFileName,
+    int CurrentFile,
+    int TotalFiles,
+    DownloadByteProgress? Bytes);

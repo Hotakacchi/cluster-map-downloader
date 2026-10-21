@@ -237,7 +237,8 @@ public static class WorldDownloader
                 delivery.Assets,
                 worldDir,
                 notifier,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                options.FileProgress).ConfigureAwait(false);
         }
         catch (ClusterApiException ex)
         {

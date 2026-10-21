@@ -37,10 +37,13 @@ this is a volunteer-maintained project.
 - Never commit tokens, cookies, credentials, or temporary signed URLs —
   including "demo" values shaped like real ones in tests (fixtures use
   synthetic AIza-shaped keys only).
-- The guest-entry flow receives the Firebase web API key via the CLI or by
-  scanning the *user's* local artifacts; keep it that way (no vendoring),
-  route every error message through `SecretMasker`, and keep Firebase
-  credentials in memory only (`IDisposable` clients, no serialization).
+- The guest-entry flow receives the Firebase web API key via the CLI/GUI or
+  by scanning the *user's* local artifacts (the GUI auto-discovers a locally
+  installed client package through `GuestEntryResolverFactory` — user-local
+  scanning only, verified candidates, nothing vendored); keep it that way
+  (no vendoring), route every error message through `SecretMasker`, and keep
+  Firebase credentials in memory only (`IDisposable` clients, no
+  serialization).
 - Local research artifacts belong in `.work/`, `downloads/`, `cache/`,
   `output/`, or `artifacts-local/` — all of which are git-ignored.
 - `tests/` must not depend on downloading or redistributing a specific

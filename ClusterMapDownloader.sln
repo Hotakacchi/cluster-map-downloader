@@ -13,6 +13,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{D36A348A
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClusterMapDownloader.Tests", "tests\ClusterMapDownloader.Tests\ClusterMapDownloader.Tests.csproj", "{42FB1001-577F-4BD8-B44D-A855AF7D5C8A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClusterMapDownloader.Gui", "src\ClusterMapDownloader.Gui\ClusterMapDownloader.Gui.csproj", "{A80984C8-713C-4C82-810B-B7C468D7D99F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -34,10 +36,15 @@ Global
 		{42FB1001-577F-4BD8-B44D-A855AF7D5C8A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{42FB1001-577F-4BD8-B44D-A855AF7D5C8A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{42FB1001-577F-4BD8-B44D-A855AF7D5C8A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A80984C8-713C-4C82-810B-B7C468D7D99F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A80984C8-713C-4C82-810B-B7C468D7D99F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A80984C8-713C-4C82-810B-B7C468D7D99F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A80984C8-713C-4C82-810B-B7C468D7D99F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E00EC147-D680-430A-810E-7D59719EE25F} = {A3D0579C-F8E3-4468-8DEE-EAC36784424F}
 		{3B4F0494-616C-45D3-801D-8E8863556109} = {A3D0579C-F8E3-4468-8DEE-EAC36784424F}
 		{42FB1001-577F-4BD8-B44D-A855AF7D5C8A} = {D36A348A-436E-470C-89E6-CEF47BFA12B7}
+		{A80984C8-713C-4C82-810B-B7C468D7D99F} = {A3D0579C-F8E3-4468-8DEE-EAC36784424F}
 	EndGlobalSection
 EndGlobal

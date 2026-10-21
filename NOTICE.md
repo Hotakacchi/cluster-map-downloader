@@ -42,7 +42,9 @@ generate from proprietary data to this repository.
   anonymous guest flow a fresh, free client performs for a single public
   world (no account login, no credential impersonation, no endpoint
   guessing); if cluster refuses that flow, the tool reports it (exit `5`)
-  instead of working around it.
+  instead of working around it. The Windows GUI
+  (`cluster-map-downloader-gui.exe`) is a front-end for the same flow and
+  enforces the same policies.
 - Some venue AssetBundles are AES-encrypted by the game client
   (`AesAssetDecryptor`). This tool saves those bytes as-is and implements
   no decryption or key extraction.

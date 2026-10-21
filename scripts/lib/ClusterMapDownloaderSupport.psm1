@@ -50,6 +50,8 @@ function Get-RepoPaths {
         DownloadsDir    = Join-Path $RepoRoot 'downloads'
         CliPublishDir   = Join-Path $RepoRoot 'artifacts-local' 'cli'
         CliProject      = Join-Path $RepoRoot 'src' 'ClusterMapDownloader.Cli' 'ClusterMapDownloader.Cli.csproj'
+        GuiPublishDir   = Join-Path $RepoRoot 'artifacts-local' 'gui'
+        GuiProject      = Join-Path $RepoRoot 'src' 'ClusterMapDownloader.Gui' 'ClusterMapDownloader.Gui.csproj'
         CliSolution     = Join-Path $RepoRoot 'ClusterMapDownloader.sln'
         WrapperProject  = Join-Path $RepoRoot 'tools' 'ifpsdasm-wrapper' 'ifpsdasm-wrapper.csproj'
         WrapperSolution = Join-Path $RepoRoot 'tools' 'ifpsdasm-wrapper' 'ifpsdasm-wrapper.sln'

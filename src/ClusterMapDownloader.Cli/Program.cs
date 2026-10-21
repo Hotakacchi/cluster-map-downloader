@@ -165,16 +165,43 @@ internal static class Program
         if (guestEntry)
         {
             PrintGuestEntryNotice();
-            options = options with
+            // Specific diagnostics for explicitly broken paths, before the generic options guidance.
+            var explicitDirs = new (string Flag, string? Value)[]
             {
-                DeliveryResolver = new GuestEntryDeliveryResolver(
-                    new GuestEntryOptions
-                    {
-                        FirebaseApiKey = firebaseApiKey,
-                        ClientPackageDirectory = ResolveLocalDir(clientPackage, ".work/client-package"),
-                        Il2CppDumpDirectory = ResolveLocalDir(il2CppDump, ".work/il2cpp-dump"),
-                    }),
+                ("--client-package", clientPackage),
+                ("--il2cpp-dump", il2CppDump),
             };
+            foreach (var (flag, value) in explicitDirs)
+            {
+                if (!string.IsNullOrWhiteSpace(value) && !Directory.Exists(value))
+                {
+                    Console.Error.WriteLine($"{flag} directory not found: {value}");
+                    return ExitCodes.Usage;
+                }
+            }
+
+            var resolver = GuestEntryResolverFactory.Create(
+                firebaseApiKey: firebaseApiKey,
+                clientPackageDirectory: clientPackage,
+                il2CppDumpDirectory: il2CppDump);
+            if (resolver is null)
+            {
+                Console.Error.WriteLine("""
+                    --guest-entry needs a source for the public Firebase web API key. Any one of these works:
+                      1. pass the key:            --firebase-api-key <AIza...>
+                      2. point at a local, unpacked cluster client package:
+                                                  --client-package <dir>   (scan: *_Data/resources.assets, global-metadata.dat)
+                      3. point at a local IL2CPP dump:
+                                                  --il2cpp-dump <dir>      (scan: stringliteral.json)
+                    An installed cluster client is discovered automatically (the registry entry the
+                    installer wrote, then well-known install dirs), so simply downloading/getting one
+                    usually needs none of the flags above. The key is a public client-shipped project
+                    identifier; it is never logged, never saved, and never committed by this repo.
+                    """);
+                return ExitCodes.Usage;
+            }
+
+            options = options with { DeliveryResolver = resolver };
         }
 
         WorldDownloadResult result;
@@ -195,18 +222,6 @@ internal static class Program
         }
 
         return result.ExitCode;
-    }
-
-    /// <summary>Resolves a user-provided local directory or the conventional default when that exists.</summary>
-    private static string? ResolveLocalDir(string? explicitValue, string conventionalDefault)
-    {
-        if (!string.IsNullOrWhiteSpace(explicitValue))
-        {
-            return explicitValue;
-        }
-
-        var path = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, conventionalDefault));
-        return Directory.Exists(path) ? path : null;
     }
 
     private static void PrintGuestEntryNotice()
@@ -271,7 +286,10 @@ internal static class Program
                                        secret identifier; alternative to local auto-detect).
                                        Never logged, never committed from this tool.
                   --client-package <dir>  Local unpacked cluster client package used to
-                                       auto-detect the web API key (global-metadata.dat scan).
+                                       auto-detect the web API key (scans *_Data/resources.assets,
+                                        the observed carrier, and global-metadata.dat;
+                                        an installed cluster client is auto-discovered
+                                        when this option is omitted).
                   --il2cpp-dump <dir>  Local IL2CPP dump dir (stringliteral.json) used to
                                        auto-detect the web API key.
                   --metadata-only      Stop before delivery resolution (public metadata only)

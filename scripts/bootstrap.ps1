@@ -9,7 +9,8 @@
     Default flow (no parameters):
       1. check the .NET SDK,
       2. restore + build the solution (src/lib, src/CLI, tests),
-      3. publish the CLI to artifacts-local/cli (ignored),
+      3. publish the CLI to artifacts-local/cli and the GUI to
+         artifacts-local/gui (both ignored),
       4. print where to run things from.
 
     Opt-in switches:
@@ -57,13 +58,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "solution build failed with exit code $LASTEXITCODE" }
     Write-StepOk 'Solution built'
 
-    # --- 3. publish the CLI ----------------------------------------------
+    # --- 3. publish the CLI + GUI -----------------------------------------
     $cliExe = Join-Path $paths.CliPublishDir 'cluster-map-downloader.exe'
     if (-not $SkipCliPublish) {
         Write-Step ('Publishing CLI to {0}' -f $paths.CliPublishDir)
         & dotnet publish $paths.CliProject -c $Configuration --nologo -v minimal -o $paths.CliPublishDir
         if ($LASTEXITCODE -ne 0) { throw "CLI publish failed with exit code $LASTEXITCODE" }
         Write-StepOk "CLI published: $cliExe"
+
+        Write-Step ('Publishing GUI to {0}' -f $paths.GuiPublishDir)
+        & dotnet publish $paths.GuiProject -c $Configuration --nologo -v minimal -o $paths.GuiPublishDir
+        if ($LASTEXITCODE -ne 0) { throw "GUI publish failed with exit code $LASTEXITCODE" }
+        Write-StepOk ("GUI published: {0}" -f (Join-Path $paths.GuiPublishDir 'cluster-map-downloader-gui.exe'))
     }
 
     # --- 4. (-WithTools / -WithAnalysisTools) third-party tools ----------

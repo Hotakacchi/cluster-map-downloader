@@ -37,7 +37,8 @@ redistributable and honest. Companion reading:
 |---|---|---|
 | `src/ClusterMapDownloader` | .NET 8 class library: URL parsing, API client, metadata models, venue resolution, guest-entry flow, download plumbing, orchestration | zero external network beyond the documented endpoints |
 | `src/ClusterMapDownloader.Cli` | `cluster-map-downloader` CLI (`download`, `metadata`, `version`, `help`) | exit-code contract documented below |
-| `tests/ClusterMapDownloader.Tests` | xUnit suite (52 tests), all synthetic (no copyrighted world data, no real keys) | see "Testing", §6 |
+| `src/ClusterMapDownloader.Gui` | WinForms paste-a-URL GUI (`cluster-map-downloader-gui.exe`, Japanese UI) — the same pipeline plus per-file/byte progress; always runs the guest-entry flow (its own consent text does the documenting) | net8.0-windows; `EnableWindowsTargeting` keeps it buildable on non-Windows CI |
+| `tests/ClusterMapDownloader.Tests` | xUnit suite (69 tests), all synthetic (no copyrighted world data, no real keys) | see "Testing", §6 |
 | `tools/ifpsdasm-wrapper` | net8.0 front-end for IFPSLib; turns the installer's `CompiledCode.bin` into readable disassembly | NOT part of the main solution — needs `.work/third-party/IFPSTools.NET` (bootstrap-fetched) |
 | `scripts/` | PowerShell research helpers (see §4) | all outputs into git-ignored dirs |
 
@@ -52,9 +53,10 @@ redistributable and honest. Companion reading:
 | `VenueResolver` / `VenueResolution` | extracts `venueId`, checks `venue_<hex>` shape |
 | `IWorldDeliveryResolver`, `DeliveryRequest/Resolution/Status` | **the boundary** — pluggable delivery decision point |
 | `NotImplementedDeliveryResolver` | default resolver: reports `NotImplemented`, with reason + next research steps (see below) |
-| `GuestEntry/*` | the opt-in guest-entry flow (see §3.2): `FirebaseApiKeyLocator`, `FirebaseGuestAuthenticator`, `RoomEntryApiClient`, room-enter models, `GuestEntryDeliveryResolver` |
+| `GuestEntry/*` | the opt-in guest-entry flow (see §3.2): `FirebaseApiKeyLocator`, `FirebaseGuestAuthenticator`, `RoomEntryApiClient`, room-entry models, `GuestEntryDeliveryResolver`, plus `ClientPackageLocator` (auto-discovery of a local client package) and `GuestEntryResolverFactory` (one shared construction point for CLI + GUI) |
 | `SecretMasker` | scrubs AIza/JWT/refresh-token shapes from every message that could carry one |
-| `FileDownloader` | staged downloads, byte formatting, resume-friendly manifest rows |
+| `AssetFileFormatInspector` | leading-byte classification of saved files (`unityfs-plain` / `unknown-probably-encrypted`) + SHA-256; honest labeling only — nothing is decrypted |
+| `FileDownloader` | staged downloads, byte formatting, resume-friendly manifest rows, optional `DownloadedFileProgress` (per-file + byte-level) sink |
 | `WorldDownloader` | the six-stage orchestrator; also writes `world-metadata.json` and `downloads-manifest.json` |
 | `ExitCodes` | the CLI exit contract |
 | `ToolInfo` | name/version/notice strings |
@@ -86,7 +88,9 @@ reproduces the normal public client guest flow for **one specified world**
 
 | Component | Role |
 |---|---|
-| `FirebaseApiKeyLocator` | locate the public web API key: `--firebase-api-key`, or scan `--il2cpp-dump`/`stringliteral.json`, or scan `--client-package`/`global-metadata.dat` (AIza-shaped); >1 distinct value ⇒ refuse to guess |
+| `FirebaseApiKeyLocator` | locate the public web API key: `--firebase-api-key`, or scan `--il2cpp-dump`/`stringliteral.json`, or scan the package (AIza-shaped literals in `*_Data/resources.assets` — the observed carrier — plus `global-metadata.dat`); >1 distinct value ⇒ refuse to guess |
+| `ClientPackageLocator` | auto-discover a local unpacked client package (explicit dir wins): working-tree `.work/client-package`, then registry-declared cluster install locations (HKCU/HKLM uninstall keys incl. WOW6432Node whose name/display name matches "cluster"), then well-known install dirs; every candidate is verified against the Unity data files above, so no candidate is trusted before verification |
+| `GuestEntryResolverFactory` | single construction point for CLI + GUI: resolves package/dump defaults (`.work/...` conventions), returns null ("report options instead") when no key and nothing discoverable |
 | `FirebaseGuestAuthenticator` | `POST identitytoolkit/v3/relyingparty/signupNewUser` `{"returnSecureToken":true}` → idToken (in memory only; errors masked, refusals → exit 5) |
 | `RoomEntryApiClient` | `POST /v1/login` (Bearer idToken, empty JSON) → anonymous `UserPrivateResponse`; sets `X-Cluster-LoginID`; `POST /v1/world_room_set/{worldId}/entry_request` → `{roomId, deepLink}`; `POST /v1/rooms/{roomId}/enter_v2` `{"metricsPayload":"…"}` → `RoomEnterResponse.venue.platformResources` (desktop-style `Win` device/platform headers throughout — room routes gate on platform) |
 | `GuestEntryDeliveryResolver` | map `assets[]`/`mainScene`/`subScenes[]` → `AssetDownload` list (`bundles/asset-NN-…`, `bundles/mainScene-00-…`, `bundles/subScene-NN-…`, deduped by URL); `SecretMasker` on every message |
@@ -154,7 +158,17 @@ that are *not* to be copied).
    see `.github/workflows/ci.yml`.
 5. **No decryption work, ever.** `AesAssetDecryptor`-protected bundles are
    saved as encrypted bytes; key extraction stays inside the game client
-   (out of scope forever).
+   (out of scope forever). The pipeline labels each saved file
+   (`fileFormat`: `unityfs-plain` / `unknown-probably-encrypted`, plus
+   `sha256`) instead of transforming it.
+6. **Auto-discovery is user-local and verified.** `ClientPackageLocator`
+   scans only the user's own machine (in-repo conventions
+   `.work/client-package`, registry uninstall entries the cluster installer
+   itself wrote, well-known install dirs) and accepts a candidate only when
+   it actually contains the Unity data files the scan consumes. It never
+   touches the network and never trusts unverified paths. The GUI shares the
+   same `GuestEntryResolverFactory` and the same policies as the CLI (single
+   world, in-memory tokens, masked messages, honest refusals).
 
 ## 6. Testing
 

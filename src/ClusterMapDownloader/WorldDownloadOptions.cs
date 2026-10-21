@@ -23,6 +23,9 @@ public sealed record WorldDownloadOptions
 
     /// <summary>Optional custom HTTP handler (tests); the pipeline creates its own client otherwise.</summary>
     public HttpMessageHandler? HttpHandler { get; init; }
+
+    /// <summary>Optional per-file/byte progress sink (GUI); the pipeline reports null-free coarse progress otherwise.</summary>
+    public IProgress<DownloadedFileProgress>? FileProgress { get; init; }
 }
 
 /// <summary>Final result of one download run.</summary>
