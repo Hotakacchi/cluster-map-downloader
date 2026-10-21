@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ClusterMapDownloader.Cli</RootNamespace>
+    <!-- The user-facing command name -->
+    <AssemblyName>cluster-map-downloader</AssemblyName>
+    <Version>0.1.0</Version>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClusterMapDownloader\ClusterMapDownloader.csproj" />
+  </ItemGroup>
+
+</Project>

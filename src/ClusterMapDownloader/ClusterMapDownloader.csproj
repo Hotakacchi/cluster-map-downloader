@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ClusterMapDownloader</RootNamespace>
+    <AssemblyName>ClusterMapDownloader</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Unofficial downloader for publicly accessible cluster.mu world metadata and (research) world assets.</Description>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
