@@ -1,10 +1,18 @@
 # Research: how cluster delivers world data, and where the no-auth boundary sits
 
 > **Status: complete (October 2026).** The delivery mechanism has been
-> identified by research, and it deliberately **stops at this project's
-> no-authentication boundary**: venue AssetBundles are only obtainable after
-> the client's authenticated room-enter flow. This document records every
-> step so the conclusion is reproducible and auditable.
+> identified by research. This document records every step so the conclusion
+> is reproducible and auditable.
+>
+> Two delivery modes exist now:
+> * **default (no flags):** the tool stops at this project's no-authentication
+>   boundary — venue AssetBundles are only obtainable after the client's
+>   guest-authenticated room-enter flow — with exit code `2`.
+> * **explicit opt-in (`--guest-entry`):** documented in §8, the tool
+>   reproduces the *normal public client guest flow* (anonymous Firebase
+>   sign-in → entry request → room-enter v2 → the platformResources asset
+>   list) for exactly one specified public world. No credentials, no
+>   decryption, no enumeration. It runs only when asked for.
 
 This document describes *research only*. The repository ships no client
 binaries, no world assets, no disassembly dumps, and no secret/key literals —
@@ -96,10 +104,15 @@ older `3.103.2610071832` / build `2610141027`).
   "unityVersion": "6000.x.y",
   "renderPipelinePresetId": "...",
   "platformResources": {
-    "assetResources": [
+    "assets": [
       { "id": "...", "assetBundleUrl": "https://.../<bundle>.bundle" }
     ],
-    "sceneResources": [
+    "mainScene": {
+      "assetBundleUrl": "https://.../<scene>.bundle",
+      "assetIdsDependsOn": ["..."],
+      "unitySceneName": "..."
+    },
+    "subScenes": [
       {
         "assetBundleUrl": "https://.../<scene>.bundle",
         "assetIdsDependsOn": ["..."],
@@ -110,8 +123,13 @@ older `3.103.2610071832` / build `2610141027`).
 }
 ```
 
-(Shape as observed in the IL2CPP type dumps; `platformResources` entries are
-`UnityAsset`/`UnityResource` records. Field *values* above are placeholders.)
+Field names verified against the IL2CPP type dump
+(`ClusterVR.Infrastructure.Api.RequestAndResponse.Generated`:
+`PlatformResources` → `assets: List<UnityAsset>`, `mainScene: UnityResource`,
+`subScenes: List<UnityResource>`; `UnityAsset` = `{id, assetBundleUrl}`;
+`UnityResource` = `{assetBundleUrl, assetIdsDependsOn[], unitySceneName}`.
+Field *values* above are placeholders. `RoomEnterResponse` itself also carries
+`roomId`, `entryId`, `worldRoomSetId`, `worldType` and many other members.
 
 ### 3.3 How the client turns that into files
 
@@ -139,26 +157,70 @@ Error envelope observed on failures:
 { "id": "...", "code": "BAD_TOKEN_EXIST", "status": 401, "detail": "...", "meta": {} }
 ```
 
+#### 3.4.1 How the client authenticates (IL2CPP evidence)
+
+The client's auth chain, for a *fresh install / guest session*:
+
+1. **Anonymous Firebase sign-in.**
+   `ClusterVR.Infrastructure.Firebase.Authenticator.FirebaseAuthenticator` holds
+   the URL constants `GoogleSignUpUrl =
+   https://www.googleapis.com/identitytoolkit/v3/relyingparty/signupNewUser?key={0}`
+   (legacy identitytoolkit v3 endpoint) plus the modern
+   `GoogleCustomTokenSignInUrl =
+   https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key={0}`
+   and `GoogleIdentityUrl = …verifyAssertion?key={0}`. Anonymous sign-up sends
+   `{"returnSecureToken":true}` (`AnonymousSignInParams`); the response is a
+   `FirebaseCredential { idToken, refreshToken, … }` (`FirebaseRefreshResponse`
+   fields: `access_token, expires_in, id_token, project_id, refresh_token,
+   token_type, user_id`; refresh posts `FirebaseRefreshRequestParams
+   {code, grant_type, refresh_token}` to
+   `https://securetoken.googleapis.com/v1/token?key=`).
+2. **Every API request carries `Authorization: Bearer <idToken>`.**
+   `RimuldarApiHeaderProcessor` (`ClusterVR.Infrastructure.Api.Client`) has
+   `OAuth2AuthorizationKey = "Authorization"`, `Bearer = "Bearer"`,
+   `AddOAuth2AuthorizationHeaderValues(www, idToken)` and
+   `BuildBearerToken(token)`; it also adds the `X-Cluster-*` headers
+   (`X-Cluster-App-Version`, `X-Cluster-Build-Version`, `X-Cluster-Device`,
+   `X-Cluster-Platform`, `X-Cluster-LoginID`, `X-Cluster-Analytics`,
+   `Accept-Language`), exactly the header set the public web client uses.
+3. **World entry needs a runtime room.** Rooms belong to a world room set
+   (`Room.worldRoomSetId`, route literals `/v1/world_room_set/` and
+   `/entry_request`). `CreateEntryRequestService.CreateEntryRequestAsync(
+   WorldRoomSetId wrsId, …)` → `POST /v1/world_room_set/{wrsId}/entry_request`
+   returns `CreateEntryRequestResponse { deepLink, roomId }`; that runtime
+   `roomId` is then passed to `EnterToRoomV2Async(roomId, queryString, …)`.
+   (`POST /v1/rooms/{roomId}/enter_v2` body: `PostEnterV2RoomPayload
+   { metricsPayload: string }`.)
+4. **Bundle URLs are absolute and fetched without API auth** (plain
+   UnityWebRequest; see §3.3). `GET /v1/account/firebase_auth_custom_token`
+   (`FirebaseAuthCustomToken { token }` → Firebase custom token) exists as an
+   account→Firebase bridge; the anonymous sign-up path above is what a guest
+   session uses on a fresh install (`FirebaseTokenRefresher` runs at app
+   start).
+
 ### 3.5 Conclusion
 
 World **metadata** is public; world **content** (`platformResources`)
-arrives only as part of an authenticated room-enter flow. Reproducing that
-flow means emulating a normal client session with Firebase guest/auth
-credentials — which is exactly the boundary this project refuses to cross
-without an explicitly documented, opt-in design discussion (the current
-resolver simply reports `NotImplemented`; see
-[`NotImplementedDeliveryResolver.cs`](../src/ClusterMapDownloader/NotImplementedDeliveryResolver.cs)).
+arrives only as part of the guest-authenticated room-enter flow. The default
+tool behavior therefore stops at the delivery stage with exit code `2` and
+prints `World asset download is not implemented yet.`
 
-## 4. Why this is the *right* stopping point for an open-source tool
+There is, however, an honest way to describe that flow without any bypass:
+it is the same anonymous guest flow a fresh, free client install performs
+end to end. §8 documents the explicit, opt-in `--guest-entry` mode that
+implements exactly that equivalence — it is never enabled by default, never
+silent, and bounded to one specific world per run.
+
+## 4. Why the default (no flags) stops where it stops
 
 1. **No public endpoint exists** for the manifest — every probe and every
-   code path goes through the enter flow.
-2. Any "anonymous" trick would be an access-control bypass by definition
-   and is out of scope forever, not merely "not yet done".
-3. Emulating authentication is possible for a *researcher*, but it changes
-   the tool from "public-data helper" into "client impersonator"; that is a
-   policy decision, not a research gap — and this project's published
-   decision is **no** (see [ARCHITECTURE.md § Boundaries](ARCHITECTURE.md#boundaries)).
+   code path goes through the guest-authenticated enter flow.
+2. Running a guest-authenticated flow **by default** would silently turn the
+   tool into an automated client; this project treats silent automation as a
+   policy decision the user must make explicitly (the flag does exactly that).
+3. Any *other* trick (stolen credentials, forged tokens, key/DRM extraction)
+   would be an access-control bypass by definition and is out of scope
+   forever, not merely "not yet done".
 
 ## 5. Verification matrix
 
@@ -202,3 +264,93 @@ resolver that can *honestly* complete the pipeline. Any such change must:
   [ARCHITECTURE.md](ARCHITECTURE.md);
 * keep world/venue content handling local-only, with legal-use notes
   (copyrighted content — see [NOTICE.md](../NOTICE.md)).
+
+## 8. Guest-entry mode (documented, explicit opt-in)
+
+**Status: implemented as `--guest-entry`.** Default behavior without the flag
+is unchanged (exit 2 at the delivery boundary).
+
+### 8.1 What it does, end to end
+
+Given one public world, the resolver
+([`GuestEntryDeliveryResolver.cs`](../src/ClusterMapDownloader/GuestEntry/GuestEntryDeliveryResolver.cs))
+performs the exact request chain a fresh public client performs:
+
+1. **Locate the Firebase web API key at runtime** (never stored in this repo):
+   CLI `--firebase-api-key`, or scan of the user's local artifacts
+   (`--il2cpp-dump <dir>/stringliteral.json`, then
+   `--client-package <dir>/**/global-metadata.dat` and the Unity serialized
+   data `*_Data/resources.assets` — the observed October 2026 carrier —
+   looking for the AIza-shaped value). Ambiguous (multiple distinct values)
+   ⇒ hard error with instructions. The key is a public, client-shipped
+   project identifier, not a secret — but the repo still refuses to vendor it.
+2. **Anonymous Firebase sign-in** (same REST call as every fresh client
+   install): `POST
+   https://www.googleapis.com/identitytoolkit/v3/relyingparty/signupNewUser?key=<webApiKey>`
+   with body `{"returnSecureToken":true}` → `idToken/refreshToken`
+   (in memory only, masks on every error path).
+3. **Cluster guest login** (live-verified October 2026; the step a fresh
+   client performs right after sign-up,
+   `ApiUserRepository.LoginAsync` → `RimuldarApiClient.LoginAsync`):
+   `POST https://api.cluster.mu/v1/login` with
+   `Authorization: Bearer <idToken>` and an empty JSON body `{}` →
+   HTTP 201 `UserPrivateResponse` (`{userId, isAnonymous:true, …}`) —
+   cluster links the Firebase identity to a fresh anonymous account.
+   Without this step every room route answers `401 BAD_TOKEN_EXIST`.
+   The response's `userId` travels as the `X-Cluster-LoginID` header on
+   the room routes afterwards (missing ⇒ `400 BAD_REQUEST_ROOM_ENTER
+   "room entry request not exist"`).
+4. **World entry request**: `POST
+   https://api.cluster.mu/v1/world_room_set/{worldId}/entry_request`
+   with `Authorization: Bearer <idToken>`, `X-Cluster-LoginID` and
+   desktop-style `X-Cluster-Device: Win` / `X-Cluster-Platform: Win`
+   headers → HTTP 201 `{"roomId": "…", "deepLink": "…",
+   "presentedFreeCCAmount": 0}`. Room routes gate on platform
+   (`406 platform_not_supported` outside
+   `Android/Oculus/NowGG/iOS/Mac/Win`; `'Web'` is not an in-room
+   platform, so the guest client overrides the metadata-stage headers).
+   The `roomId` is the runtime room of the world's world-server (a GUID
+   reused across guests within the same room set), not a `room_`-prefixed id.
+5. **Room enter v2**: `POST
+   https://api.cluster.mu/v1/rooms/{roomId}/enter_v2` with the client's
+   payload shape `{"metricsPayload":"…"}` (this tool sends an honest,
+   self-identifying string, not fabricated device metrics; one retry with
+   an empty string on `400`) → HTTP 201 `RoomEnterResponse`, whose
+   `venue.platformResources` carries
+   `assets[]` / `mainScene` / `subScenes[]` with absolute `assetBundleUrl`s.
+6. **Download**: the plain HTTP file downloader fetches each bundle into
+   `output/<worldId>/bundles/…` and writes `downloads-manifest.json`
+   (same pipeline as the public-metadata stages; URLs are absolute and
+   unauthenticated exactly as the client fetches them).
+
+Live end-to-end verification (October 2026): with the key located from a
+local `*_Data/resources.assets`, the whole chain above succeeded against
+the production API for the public sample world
+`https://cluster.mu/w/c59fd20a-85b9-45ad-a357-4fdece9c180b`
+(`venueSize` 118,100,853 bytes) — one `mainScene` bundle
+(`assets=[]`, `subScenes=[]` for this venue), downloaded 118,100,853
+bytes, file header `UnityFS` (a plain Unity asset bundle; venues whose
+bundles are `AesAssetDecryptor`-encrypted stay encrypted and are saved
+as-is).
+
+### 8.2 The guarantees this mode keeps
+
+| Rule | Implementation |
+|---|---|
+| Default stays at the no-auth boundary | Resolver is constructed only from `--guest-entry`; `NotImplementedDeliveryResolver` remains the default |
+| No credentials | Anonymous Firebase sign-up only; no account login, no password/OAuth token flow, no custom-token bridge |
+| No secret literals in the repo | Key found at runtime or passed per run; `SecretMasker` scrubs AIza/JWT shapes from every message |
+| Tokens never persist | Firebase credential lives in the run's memory; not written to disk, not in manifests |
+| Single world, no enumeration | One URL → one run → one login + one entry_request + one enter_v2; no listing/scraping loops |
+| No decryption / DRM work | `AesAssetDecryptor`-protected bundles are saved as-is; key extraction stays out of scope forever |
+| Honest payload | `metricsPayload` self-identifies the tool instead of fabricating client analytics |
+| Refusals stay honest | 4xx from cluster maps to `DeliveryStatus.RequiresNonPublicAccess` (exit 5) with the server's masked reason |
+
+### 8.3 Responsibility of the user
+
+This mode automates requests the free client performs for every visitor of a
+public world, and it does nothing the client does not do (no crafted
+requests, no endpoint guessing, no credential use). Nevertheless: users are
+responsible for complying with cluster's Terms of Service at the time they
+run the tool, for respecting world creators' rights over their content
+(see [NOTICE.md](../NOTICE.md)), and for keeping downloads personal.

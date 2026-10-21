@@ -33,9 +33,9 @@ public sealed class NotImplementedDeliveryResolver : IWorldDeliveryResolver
                 "RoomVenue.platformResources, via VenueAssetBundleLoaderV2.BundleLoader.LoadAsync (UnityWebRequest).",
                 "Fact: obtaining RoomVenue requires cluster's normal guest/auth flow; the desktop client uses " +
                 "Firebase auth (Authorization header) for /v1/rooms/*/enter_* routes.",
-                "Decision recorded: this project does not emulate authenticated sessions, so no next step is " +
-                "carried out; a future explicit, documented opt-in mode would be required. Contributions must " +
-                "state an equivalence to the normal public client flow per docs/ARCHITECTURE.md.",
+                "An explicit, documented opt-in mode exists: --guest-entry reproduces the normal public client " +
+                "guest flow (anonymous Firebase sign-in → entry request → room-enter v2 → platformResources). " +
+                "It is off by default; this default path stays at the no-authentication boundary. See README.md.",
                 "Caveat documented: some venue assets pass through AesAssetDecryptor (IAssetDecryptor) after " +
                 "download, so raw bundle bytes may not be directly usable.",
             },

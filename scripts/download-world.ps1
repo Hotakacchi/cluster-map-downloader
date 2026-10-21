@@ -18,8 +18,10 @@
     "World asset download is not implemented yet." has been printed.
 
     The tool fetches only publicly accessible metadata (GET /v1/worlds/{id})
-    and never emulates authentication: see docs/RESEARCH.md for why the
-    delivery stage deliberately stops at that boundary.
+    without authentication by default. The explicit opt-in switch -GuestEntry
+    additionally runs the documented guest-entry mode (anonymous Firebase
+    sign-in, entry request, room-enter v2, then the venue asset downloads) —
+    see docs/RESEARCH.md §8. Keys/tokens are never printed or persisted.
 #>
 [CmdletBinding()]
 param(
@@ -32,6 +34,14 @@ param(
     [switch]$DryRun,
     [switch]$Json,
     [switch]$Rebuild,
+
+    # Explicit opt-in guest-entry mode (off by default; never combined with -MetadataOnly).
+    [switch]$GuestEntry,
+    # Firebase *web* API key (a public client-shipped identifier, not a secret).
+    # Alternatives: -ClientPackage / -Il2CppDump for local auto-detection.
+    [string]$FirebaseApiKey,
+    [string]$ClientPackage,
+    [string]$Il2CppDump,
 
     [string]$AppVersion,
     [string]$BuildVersion,
@@ -66,6 +76,10 @@ try {
     }
 
     # --- build the CLI command line -------------------------------------
+    if ($GuestEntry -and $MetadataOnly) {
+        throw '-GuestEntry cannot be combined with -MetadataOnly (guest entry exists to fetch the venue asset manifest).'
+    }
+
     $command = if ($MetadataOnly) { 'metadata' } else { 'download' }
     $cliArguments = @($command, $WorldUrl, '-o', $Output)
     if ($DryRun)          { $cliArguments += '--dry-run' }
@@ -75,8 +89,19 @@ try {
     if ($Device)          { $cliArguments += @('--device', $Device) }
     if ($Platform)        { $cliArguments += @('--platform', $Platform) }
     if ($ApiBase)         { $cliArguments += @('--api-base', $ApiBase) }
+    if ($GuestEntry)      { $cliArguments += '--guest-entry' }
+    if ($FirebaseApiKey)  { $cliArguments += @('--firebase-api-key', $FirebaseApiKey) }
+    if ($ClientPackage)   { $cliArguments += @('--client-package', $ClientPackage) }
+    if ($Il2CppDump)      { $cliArguments += @('--il2cpp-dump', $Il2CppDump) }
 
-    Write-SupportInfo ('cluster-map-downloader ' + ($cliArguments -join ' '))
+    # Never echo a user-supplied API key into the console/log.
+    $printed = @($cliArguments)
+    for ($i = 0; $i -lt $printed.Count; $i++) {
+        if ($printed[$i] -eq '--firebase-api-key' -and $i -lt ($printed.Count - 1)) {
+            $printed[$i + 1] = '<masked>'
+        }
+    }
+    Write-SupportInfo ('cluster-map-downloader ' + ($printed -join ' '))
     & $cliExe @cliArguments
     $exitCode = $LASTEXITCODE
 
@@ -90,7 +115,7 @@ try {
         }
         3 { Write-StepWarn 'usage error (exit code 3): check the parameters.' }
         4 { Write-StepWarn 'world is not publicly accessible (exit code 4).' }
-        5 { Write-StepWarn 'delivery requires non-public authorization (exit code 5); the tool does not bypass.' }
+        5 { Write-StepWarn 'guest-entry delivery refused by cluster (exit code 5); beyond the guest boundary this tool does not go.' }
         default { Write-StepWarn ("unexpected exit code {0}" -f $exitCode) }
     }
 

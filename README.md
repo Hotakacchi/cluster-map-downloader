@@ -4,13 +4,16 @@ An unofficial, open-source research project for downloading **publicly
 accessible** [cluster.mu](https://cluster.mu/) world/map data without a
 normal installation of the cluster desktop application.
 
-> **Status: research complete; download stage intentionally stops at the
-> no-auth boundary** — public world metadata and venue-ID resolution are
-> implemented and working; the final world AssetBundle delivery turns out
-> to require cluster's authenticated room-enter flow (see
-> [docs/RESEARCH.md](docs/RESEARCH.md)), so this tool reports
-> `2`/`World asset download is not implemented yet.` instead of faking it
-> or bypassing anything.
+> **Status: research complete; AssetBundle delivery available as an explicit
+> opt-in mode** — public world metadata and venue-ID resolution are
+> implemented and working. The final world AssetBundle delivery requires
+> cluster's normal guest-authenticated room-enter flow (see
+> [docs/RESEARCH.md](docs/RESEARCH.md)); by default the tool reports
+> `2`/`World asset download is not implemented yet.` instead of faking it or
+> bypassing anything. As a **documented, opt-in** flag (`--guest-entry`), the
+> tool reproduces the normal public client guest flow (anonymous Firebase
+> sign-in → entry request → room-enter → the venue asset list) for exactly
+> one specified public world — no credentials, no decryption, no enumeration.
 
 This project is **not affiliated with Cluster, Inc.** (see
 [Legal / content notice](#legal--content-notice)).
@@ -22,9 +25,9 @@ This project is **not affiliated with Cluster, Inc.** (see
 | Parse `cluster.mu` world URL | **implemented** |
 | Fetch public world metadata (web API) | **implemented** (tested against public worlds) |
 | Resolve internal venue ID | **implemented** |
-| Determine normal client-side delivery mechanism | **research complete** — identified: authenticated room-enter flow (`RoomVenue.platformResources`); no public unauthenticated endpoint exists, so it is deliberately **not implemented** |
-| Download Windows world / AssetBundle data | **not implemented** (by design at the no-auth boundary) |
-| Save files locally + print metadata/download info | **implemented** (wired; becomes reachable only if an honest `IWorldDeliveryResolver` is ever added) |
+| Determine normal client-side delivery mechanism | **research complete** — identified: guest-authenticated room-enter flow (`RoomVenue.platformResources`); no public unauthenticated endpoint exists |
+| Download Windows world / AssetBundle data | **opt-in implemented** (`--guest-entry` reproduces the normal client guest flow; default stays off with exit `2`) |
+| Save files locally + print metadata/download info | **implemented** |
 
 Interim behavior: when the delivery stage cannot be resolved, the tool
 performs all metadata stages and then prints:
@@ -43,8 +46,8 @@ It does **not** fake a completed download.
   bare world ID).
 - Venue resolution and metadata reporting (venue ID, venue size, world
   type, privacy type, SDK type/version, creator, thumbnails).
-- Generic, tested asset download/manifest plumbing ready for use once the
-  delivery mechanism is identified.
+- Generic, tested asset download/manifest plumbing (used by the opt-in mode
+  and ready for future resolvers).
 - Reusable PowerShell bootstrap / installer-extraction / binary-analysis
   scripts for the research workflow.
 - `ifpsdasm-wrapper`, a small .NET 8 tool that turns the Cluster installer's
@@ -57,27 +60,35 @@ It does **not** fake a completed download.
 world URL ──parse──► worldId
    worldId ──GET https://api.cluster.mu/v1/worlds/{worldId}──► metadata (venueId, venueSize, ...)
    venueId ──venue resolution──► venue_<24+ hex>
-   venue   ──delivery resolution──► STOPS (exit 2): the identified delivery mechanism
-           │                          requires cluster's authenticated room-enter flow
-           │                          (RoomVenue.platformResources) — not emulated here
-           └──downloader (generic HTTP file pipeline, manifest writing)──► output/<worldId>/...
+   venue   ──delivery resolution──► default: STOPS (exit 2): the identified delivery mechanism
+            │                          requires cluster's guest-authenticated room-enter flow
+            │                          (RoomVenue.platformResources) — not run without opt-in
+            │   --guest-entry ► venue assets via the normal client guest flow:
+            │        anonymous Firebase sign-in (public identitytoolkit REST,
+            │        per-run key, tokens in memory only) →
+            │        POST /v1/world_room_set/{worldId}/entry_request → roomId →
+            │        POST /v1/rooms/{roomId}/enter_v2 → RoomEnterResponse.venue.platformResources
+            └──downloader (generic HTTP file pipeline, manifest writing)──► output/<worldId>/...
 ```
 
 The key open research question is answered in
 [`docs/RESEARCH.md`](docs/RESEARCH.md): a public `worldId` resolves to a
 `venueId` (e.g. `venue_7b06e33a0b3cec1e5fcaf5b028`), but the venue bundle
 manifest (`RoomVenue.platformResources`) is only issued by cluster's
-authenticated room-enter flow (`POST /v1/rooms/{roomId}/enter_v2` /
+guest-authenticated room-enter flow (`POST /v1/rooms/{roomId}/enter_v2` /
 `GET /v1/rooms/{roomId}/enter_info`, `401 BAD_TOKEN_EXIST` without a
 Firebase `Authorization` token). The client then loads each
 `assetBundleUrl` via `VenueAssetBundleLoaderV2.BundleLoader.LoadAsync`
 (UnityWebRequest), with some bundles AES-encrypted (`AesAssetDecryptor`).
 
-This project deliberately implements **no** authentication bypass,
-access-control bypass, credential extraction, or token theft; it also does
-not emulate a client session to obtain that manifest. If a download
-requires authorization that the normal public flow does not provide, the
-tool stops at that point and says so.
+This project implements **no** authentication bypass, access-control bypass,
+credential extraction, or token theft. By default it does not even touch the
+guest-authenticated flow; the opt-in `--guest-entry` mode reproduces exactly
+the anonymous guest flow a fresh, free client install performs (no accounts,
+no forged tokens, no encryption keys) and is documented in
+[docs/RESEARCH.md §8](docs/RESEARCH.md#8-guest-entry-mode-documented-explicit-opt-in).
+If a download requires authorization that the normal public flow does not
+provide, the tool stops at that point and says so.
 
 ## Requirements
 
@@ -119,20 +130,59 @@ Switches:
 .\scripts\download-world.ps1 -WorldUrl "https://cluster.mu/w/<WORLD_ID>" -DryRun -Json
 ```
 
-### 3. CLI equivalent
+### 3. The AssetBundle stage — explicit opt-in (`--guest-entry`)
+
+By default (no flags) the tool stops at the delivery boundary with exit `2`.
+The opt-in mode reproduces the normal public client guest flow for **one
+specified world** (anonymous Firebase sign-up, cluster anonymous-account
+login, entry request, room-enter v2, then the venue asset list) and bundles
+land in `output\<worldId>\bundles\`:
+
+```powershell
+# key supplied on the command line (a public web API identifier, never logged):
+.\scripts\download-world.ps1 -WorldUrl "https://cluster.mu/w/<WORLD_ID>" `
+    -GuestEntry -FirebaseApiKey "<AIza...>"
+
+# or let the tool locate the key from your own local client artifacts:
+.\scripts\download-world.ps1 -WorldUrl "https://cluster.mu/w/<WORLD_ID>" -GuestEntry
+
+# explicit CLI form + documentation:
+artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> --guest-entry
+artifacts-local\cli\cluster-map-downloader.exe help
+```
+
+What this mode does / does not do (details:
+[docs/RESEARCH.md §8](docs/RESEARCH.md#8-guest-entry-mode-documented-explicit-opt-in)):
+
+* performs the **same request chain as a fresh, free client install** —
+  anonymous Firebase sign-up (public identitytoolkit REST endpoint),
+  cluster guest login, world entry request, room-enter v2, then downloads
+  the bundle URLs the client itself fetches; **no** account log-in, **no**
+  credential impersonation, **no** endpoint guessing, **no** bulk enumeration;
+* the Firebase web API key (a client-shipped public identifier) comes from
+  the CLI or from local scans of *your* client artifacts — never committed;
+* tokens live in memory for the run only; `AesAssetDecryptor`-encrypted
+  bundles are saved as encrypted bytes (no decryption, no key extraction);
+* you are responsible for complying with cluster's Terms of Service and for
+  respecting creators' rights (see [Legal](#legal--content-notice)).
+
+### 4. CLI equivalent
 
 ```text
 artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> -o .\output
 artifacts-local\cli\cluster-map-downloader.exe metadata https://cluster.mu/w/<WORLD_ID>
 artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> --metadata-only --json
+artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> --guest-entry
 artifacts-local\cli\cluster-map-downloader.exe version
 ```
 
 Exit codes: `0` success, `1` error, `2` world asset download not
-implemented, `3` usage error, `4` world is not publicly accessible,
-`5` delivery requires non-public authorization (reported, not bypassed).
+implemented (default, no-flag behavior), `3` usage error,
+`4` world is not publicly accessible,
+`5` delivery refused beyond the guest boundary (reported with the server's
+masked reason, never bypassed).
 
-### 4. Installer / client research scripts
+### 5. Installer / client research scripts
 
 ```powershell
 # Third-party tools (fetched at runtime into .work/third-party; never vendored)
@@ -187,25 +237,41 @@ Highlights:
 - **Public web JavaScript** — searched for
   `AssetBundle`/`bundleUrl`/`downloadUrl`/`venueId`/`revision`/`storage`;
   no world delivery endpoint exists client-side.
+- **Auth chain (IL2CPP verified)** — anonymous Firebase sign-up
+  (`signupNewUser?key=…`, `{"returnSecureToken":true}`) →
+  `Authorization: Bearer <idToken>` on every API request
+  (`RimuldarApiHeaderProcessor.BuildBearerToken`); world entry =
+  `POST /v1/world_room_set/{wrsId}/entry_request` → `{roomId, deepLink}` →
+  `POST /v1/rooms/{roomId}/enter_v2` with
+  `{"metricsPayload":"…"}` → `RoomEnterResponse`.
+- **Guest chain verified live end-to-end (October 2026)** — with the
+  `--guest-entry` opt-in the tool downloaded a real public world's venue
+  bundle (118,100,853 bytes, plain `UnityFS`) into
+  `output/<worldId>/bundles/` together with `downloads-manifest.json`;
+  the verified chain adds `POST /v1/login` (anonymous account linking) and
+  `X-Cluster-LoginID` + desktop-style `Win` platform headers on room routes
+  (room routes refuse `'Web'` with `406 platform_not_supported`).
 
-Next steps and the boundary decision:
-[`docs/RESEARCH.md`](docs/RESEARCH.md) §4.
+Boundary decision narrative + the opt-in guest-entry mode:
+[`docs/RESEARCH.md`](docs/RESEARCH.md) §4 and §8.
 
 ## Known limitations
 
-- World AssetBundle download is not implemented — **by design**: the
-  identified delivery mechanism requires cluster's authenticated room-enter
-  flow, which this tool will not emulate. It prints the exact final message
-  and exits `2`.
+- With no flags, world AssetBundle download stops at the delivery boundary
+  with exit `2` and the exact final message — the default stays at the
+  no-authentication boundary by design.
+- The opt-in `--guest-entry` mode reproduces only the anonymous guest flow:
+  worlds that require accounts, event tickets, or invitations are refused by
+  cluster (reported honestly with exit `5`, not worked around).
+- Some venue bundles are AES-encrypted by the game client
+  (`AesAssetDecryptor`); this tool saves those bytes as-is and never
+  extracts decryption keys.
 - Only worlds whose privacy type is public are supported; non-public worlds
   stop early with a clear message.
 - API headers reflect the web client versions observed in October 2026 and
   can be overridden (`--app-version`, `--build-version`); they are plain
   version strings, not secrets.
 - The tool intends no bypass features of any kind and will not add any.
-- The builtin delivery resolver always reports *not implemented*; a future
-  public, normally-authorized delivery path would need the documented
-  design process in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7.
 
 ## Legal / content notice
 

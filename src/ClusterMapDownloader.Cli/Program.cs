@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ClusterMapDownloader;
+using ClusterMapDownloader.GuestEntry;
 
 namespace ClusterMapDownloader.Cli;
 
@@ -43,9 +44,13 @@ internal static class Program
         string? device = null;
         string? platform = null;
         string? apiBase = null;
+        string? firebaseApiKey = null;
+        string? clientPackage = null;
+        string? il2CppDump = null;
         var metadataOnly = forceMetadataOnly;
         var dryRun = false;
         var json = false;
+        var guestEntry = false;
         var help = false;
 
         for (var i = 0; i < args.Length; i++)
@@ -71,6 +76,18 @@ internal static class Program
                     break;
                 case "--api-base":
                     if (!TryNext(args, ref i, "api base url", ref apiBase)) return ExitCodes.Usage;
+                    break;
+                case "--firebase-api-key":
+                    if (!TryNext(args, ref i, "Firebase web API key", ref firebaseApiKey)) return ExitCodes.Usage;
+                    break;
+                case "--client-package":
+                    if (!TryNext(args, ref i, "client package directory", ref clientPackage)) return ExitCodes.Usage;
+                    break;
+                case "--il2cpp-dump":
+                    if (!TryNext(args, ref i, "IL2CPP dump directory", ref il2CppDump)) return ExitCodes.Usage;
+                    break;
+                case "--guest-entry":
+                    guestEntry = true;
                     break;
                 case "--metadata-only":
                     metadataOnly = true;
@@ -116,6 +133,19 @@ internal static class Program
             return ExitCodes.Usage;
         }
 
+        if (firebaseApiKey is not null && !guestEntry)
+        {
+            Console.Error.WriteLine("--firebase-api-key is only meaningful together with --guest-entry.");
+            return ExitCodes.Usage;
+        }
+
+        if (guestEntry && metadataOnly)
+        {
+            Console.Error.WriteLine("--guest-entry cannot be combined with metadata-only mode " +
+                                    "(guest entry exists to fetch the venue asset manifest).");
+            return ExitCodes.Usage;
+        }
+
         var apiOptions = new ClusterApiOptions();
         if (apiBase is not null) apiOptions = apiOptions with { BaseUrl = apiBase };
         if (appVersion is not null) apiOptions = apiOptions with { AppVersion = appVersion };
@@ -131,6 +161,21 @@ internal static class Program
             DryRun = dryRun,
             Api = apiOptions,
         };
+
+        if (guestEntry)
+        {
+            PrintGuestEntryNotice();
+            options = options with
+            {
+                DeliveryResolver = new GuestEntryDeliveryResolver(
+                    new GuestEntryOptions
+                    {
+                        FirebaseApiKey = firebaseApiKey,
+                        ClientPackageDirectory = ResolveLocalDir(clientPackage, ".work/client-package"),
+                        Il2CppDumpDirectory = ResolveLocalDir(il2CppDump, ".work/il2cpp-dump"),
+                    }),
+            };
+        }
 
         WorldDownloadResult result;
         try
@@ -150,6 +195,30 @@ internal static class Program
         }
 
         return result.ExitCode;
+    }
+
+    /// <summary>Resolves a user-provided local directory or the conventional default when that exists.</summary>
+    private static string? ResolveLocalDir(string? explicitValue, string conventionalDefault)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitValue))
+        {
+            return explicitValue;
+        }
+
+        var path = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, conventionalDefault));
+        return Directory.Exists(path) ? path : null;
+    }
+
+    private static void PrintGuestEntryNotice()
+    {
+        Console.Out.WriteLine("Guest-entry mode (explicit opt-in): this run reproduces the normal public client");
+        Console.Out.WriteLine("guest flow for ONE specified world — anonymous Firebase guest sign-in (tokens in");
+        Console.Out.WriteLine("memory only), world entry request, room-enter request, then the venue asset list");
+        Console.Out.WriteLine("the client itself downloads.");
+        Console.Out.WriteLine("  - no credentials are read, stored, or impersonated; nothing is decrypted;");
+        Console.Out.WriteLine("  - single world, no enumeration; AES-encrypted bundles stay encrypted;");
+        Console.Out.WriteLine("  - you are responsible for complying with cluster's terms of service and for");
+        Console.Out.WriteLine("    respecting world creators' rights over their content.");
     }
 
     private static bool TryNext(string[] args, ref int i, string what, ref string? target)
@@ -185,14 +254,26 @@ internal static class Program
 
             Commands:
               download   Parse the world URL, fetch public metadata, resolve the venue id,
-                         then resolve the delivery mechanism. Research identified venue
-                         AssetBundles as delivered only through cluster's authenticated
-                         room-enter flow; emulating that is out of scope, so the tool
-                         stops here (exit code 2). See docs/RESEARCH.md.
+                         then resolve the delivery mechanism. By default the tool stops at
+                         the no-authentication delivery boundary (exit code 2). The
+                         documented opt-in mode --guest-entry instead reproduces the
+                         normal public client guest flow (anonymous Firebase sign-in,
+                         entry request, room-enter) to list and download that single
+                         world's AssetBundles. See docs/RESEARCH.md and README.md.
               metadata   Same as download, but stops after metadata/venue output.
 
             Options:
               -o, --output <dir>       Output directory (default .\output\<worldId> under CWD)
+                  --guest-entry        OPT-IN: reproduce the normal public client guest flow
+                                       for this single world (no credentials, no decryption,
+                                       no enumeration). Default OFF: download stops (exit 2).
+                  --firebase-api-key <k>  Firebase web API key for guest entry (public, non-
+                                       secret identifier; alternative to local auto-detect).
+                                       Never logged, never committed from this tool.
+                  --client-package <dir>  Local unpacked cluster client package used to
+                                       auto-detect the web API key (global-metadata.dat scan).
+                  --il2cpp-dump <dir>  Local IL2CPP dump dir (stringliteral.json) used to
+                                       auto-detect the web API key.
                   --metadata-only      Stop before delivery resolution (public metadata only)
                   --dry-run            Everything except writing files
                   --json               Print a machine-readable result object at the end

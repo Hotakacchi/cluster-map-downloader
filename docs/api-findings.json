@@ -4,7 +4,7 @@
     "doc": "Machine-readable notes on the public cluster web API surface used/probed by this tool.",
     "humanDoc": ["docs/API.md", "docs/RESEARCH.md"],
     "verified": "October 2026",
-    "policy": "public, unauthenticated endpoints only; a handful of probes; no endpoint enumeration/bruteforce",
+    "policy": "public, unauthenticated endpoints by default; the opt-in --guest-entry mode reproduces the normal client guest flow only (single world, no enumeration); a handful of probes; no endpoint enumeration/bruteforce; no DRM/key work",
     "secretPolicy": "API-key/token value classes documented in prose only; no key literals in this repository",
     "userAgent": "cluster-map-downloader/{toolVersion}"
   },
@@ -27,7 +27,7 @@
     },
     "notes": [
       "Non-secret build identifiers reproduced from the public web client; overridable per run.",
-      "No Authorization header is ever sent by this tool.",
+      "No Authorization header by default. The opt-in --guest-entry mode sends 'Authorization: Bearer <anonymous-guest idToken>' obtained from the public identitytoolkit sign-up below; tokens stay in memory for the run.",
       "Plain product token without parentheses (HTTP client comment-splitting caveat)."
     ]
   },
@@ -47,15 +47,63 @@
       ]
     },
     {
+      "id": "firebase.auth.signUpAnonymous",
+      "method": "POST",
+      "host": "https://www.googleapis.com",
+      "pathTemplate": "/identitytoolkit/v3/relyingparty/signupNewUser?key={firebaseWebApiKey}",
+      "auth": "public web API key in URL (client-shipped project identifier; never vendored in this repo)",
+      "status": "evidence-backed (client constant FirebaseAuthenticator.GoogleSignUpUrl + AnonymousSignInParams); exercised only by --guest-entry",
+      "usedByTool": true,
+      "optInOnly": true,
+      "requestBody": { "returnSecureToken": true },
+      "responseShape": { "idToken": "…", "refreshToken": "…", "expiresIn": "3600", "localId": "…" },
+      "keyFields": ["idToken", "refreshToken", "expiresIn", "localId"],
+      "notes": [
+        "Exactly what a fresh, free client install performs as an anonymous guest sign-in; no account login.",
+        "Credential stays in memory for the run; error bodies are masked before display."
+      ]
+    },
+    {
+      "id": "account.guestLogin",
+      "method": "POST",
+      "pathTemplate": "/v1/login",
+      "auth": "Authorization: Bearer <anonymous-guest idToken>, empty JSON body {}",
+      "status": "verified live (October 2026): HTTP 201 UserPrivateResponse {userId, isAnonymous:true, ...} — links the Firebase identity to a fresh anonymous cluster account; exercised only by --guest-entry",
+      "usedByTool": true,
+      "optInOnly": true,
+      "notes": [
+        "Required BEFORE any room route: without it every room route answers 401 BAD_TOKEN_EXIST (live-verified).",
+        "The response userId travels as the X-Cluster-LoginID header on subsequent room routes (missing => 400 BAD_REQUEST_ROOM_ENTER 'room entry request not exist').",
+        "Matches ApiUserRepository.LoginAsync -> RimuldarApiClient.LoginAsync in the IL2CPP dump."
+      ]
+    },
+    {
+      "id": "worldRoomSet.entryRequest",
+      "method": "POST",
+      "pathTemplate": "/v1/world_room_set/{worldRoomSetId}/entry_request",
+      "auth": "Authorization: Bearer <anonymous-guest idToken>",
+      "status": "evidence-backed (route literals /v1/world_room_set/ + /entry_request, CreateEntryRequestResponse {deepLink, roomId}); exercised only by --guest-entry",
+      "usedByTool": true,
+      "optInOnly": true,
+      "responseShape": { "roomId": "…runtime room…", "deepLink": "..." },
+      "notes": [
+        "Same authorization context as account.guestLogin: Bearer idToken + X-Cluster-LoginID header + X-Cluster-Device/-Platform 'Win' (room routes gate on platform: 406 platform_not_supported outside Android/Oculus/NowGG/iOS/Mac/Win).",
+        "Returns HTTP 201; the runtime roomId from this response is what /v1/rooms/{roomId}/enter_v2 expects (not the venueId; observed as a reused world-server GUID)."
+      ]
+    },
+    {
       "id": "rooms.enterV2",
       "method": "POST",
       "pathTemplate": "/v1/rooms/{roomId}/enter_v2",
-      "auth": "Firebase Authorization header (from the normal client session)",
-      "status": "verified: GET probe -> 405 method_not_allowed (POST-only); authenticated flow required",
-      "usedByTool": false,
+      "auth": "Firebase Authorization header + X-Cluster-LoginID + X-Cluster-Device/-Platform 'Win' (platform-consistent with the entry request)",
+      "status": "verified: GET probe -> 405 method_not_allowed (POST-only); live guest chain verified October 2026 (entry_request -> enter_v2 -> RoomEnterResponse); exercised only by --guest-entry with the entry-request roomId",
+      "usedByTool": true,
+      "optInOnly": true,
+      "requestBody": { "metricsPayload": "<string>" },
       "notes": [
-        "Response embeds RoomEnterResponse.venue (RoomVenue) incl. platformResources manifest.",
-        "This tool stops at the no-auth boundary; see docs/RESEARCH.md section 3."
+        "Client payload shape PostEnterV2RoomPayload { metricsPayload: string }; this tool sends a self-identifying string instead of device metrics and retries once with an empty string on HTTP 400.",
+        "Returns HTTP 201 RoomEnterResponse; embeds venue (RoomVenue) incl. platformResources manifest: {assets:[{id, assetBundleUrl}], mainScene:{assetBundleUrl, assetIdsDependsOn, unitySceneName}, subScenes:[...]}.",
+        "Without --guest-entry this tool stops at the no-auth boundary; see docs/RESEARCH.md sections 3 and 8."
       ]
     },
     {
@@ -101,12 +149,12 @@
     ]
   },
   "clientDeliveryChain": {
-    "summary": "Venue bundle manifest (RoomVenue.platformResources with UnityAsset/UnityResource assetBundleUrl entries) is delivered ONLY via the authenticated room-enter flow.",
+    "summary": "Venue bundle manifest (RoomVenue.platformResources with UnityAsset/UnityResource assetBundleUrl entries) is delivered via the guest-authenticated room-enter flow; the explicit opt-in --guest-entry mode reproduces the normal client guest chain for one specified world.",
     "loaderClass": "VenueAssetBundleLoaderV2.BundleLoader<T>.LoadAsync(resource, assetBundleUrl, progress)",
-    "http": "UnityWebRequest against absolute assetBundleUrl values from the manifest",
-    "caveat": "Some venue assets pass through AesAssetDecryptor (IAssetDecryptor) after download; raw bytes of such entries are encrypted.",
-    "boundaryDecision": "No public unauthenticated delivery endpoint exists; emulating guest/Firebase authentication is out of scope for this tool. The resolver therefore reports DeliveryStatus.NotImplemented (exit code 2).",
-    "evidence": ["docs/RESEARCH.md sections 3 and 5"]
+    "http": "UnityWebRequest against absolute assetBundleUrl values from the manifest (no Authorization header on bundle GETs)",
+    "caveat": "Some venue assets pass through AesAssetDecryptor (IAssetDecryptor) after download; raw bytes of such entries stay encrypted — this tool never decrypts anything.",
+    "boundaryDecision": "Default (no flags): resolver reports DeliveryStatus.NotImplemented (exit code 2) at the no-auth boundary. Opt-in --guest-entry: documented guest-flow equivalence (anonymous Firebase sign-up -> world_room_set entry_request -> rooms enter_v2 -> platformResources), exit code 5 with a masked reason when cluster refuses.",
+    "evidence": ["docs/RESEARCH.md sections 3, 5 and 8"]
   },
   "clientVersionsObserved": {
     "webClient": { "appVersion": "3.103.2610071832", "buildVersion": "2610141027" },

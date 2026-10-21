@@ -37,11 +37,18 @@ generate from proprietary data to this repository.
   worlds only** (see `docs/API.md`, `docs/api-findings.json`).
 - This project implements no authentication bypass, access-control bypass,
   credential extraction, token theft, or similar behavior.
-- Where a download requires authorization that the normal public flow does
-  not provide, the tool stops and reports the limitation instead of
-  attempting to work around it.
+- By default the delivery stage stops at the no-authentication boundary
+  (exit `2`). The explicit opt-in `--guest-entry` mode reproduces only the
+  anonymous guest flow a fresh, free client performs for a single public
+  world (no account login, no credential impersonation, no endpoint
+  guessing); if cluster refuses that flow, the tool reports it (exit `5`)
+  instead of working around it.
+- Some venue AssetBundles are AES-encrypted by the game client
+  (`AesAssetDecryptor`). This tool saves those bytes as-is and implements
+  no decryption or key extraction.
 - World/AssetBundle content is copyrighted by its creators. Respect the
-  [cluster Terms of Service](https://cluster.mu/terms) and applicable law.
+  [cluster Terms of Service](https://cluster.mu/terms) and applicable law;
+  what you do with downloaded content is your responsibility.
 
 ## Cluster web API client headers
 

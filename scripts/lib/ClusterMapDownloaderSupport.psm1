@@ -709,8 +709,12 @@ function Find-TextLineMatches {
         if (($lineIndex % 200000) -eq 0) { Write-Verbose "Find-TextLineMatches: line $lineIndex" }
 
         # early-exit shortcut: once every pattern is saturated stop scanning
-        $total = $hits.Values.Sum()
-        if ($lineIndex -gt 10 -and $total -ge $totalCap) { break }
+        if ($lineIndex -gt 10) {
+            # Avoid LINQ Sum(); PowerShell extension resolution fails on ICollection<T>.
+            $total = 0
+            foreach ($countValue in $hits.Values) { $total += [int]$countValue }
+            if ($total -ge $totalCap) { break }
+        }
     }
     return @($results)
 }
