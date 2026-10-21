@@ -1,0 +1,76 @@
+# ======================================================================
+# cluster-map-downloader
+# Redistributable project code and documentation only.
+# Client binaries, world assets, tokens and reverse-engineering artifacts
+# must stay local and untracked.
+# ======================================================================
+
+# --- .NET build output ---
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+artifacts/
+artifacts-local/
+*.user
+*.suo
+*.userprefs
+TestResults/
+*.trx
+*.binlog
+project.lock.json
+
+# --- Local runtime / research directories (never commit) ---
+.work/
+.temp/
+.tmp/
+downloads/
+output/
+cache/
+third-party/
+installer/
+
+# --- Installer, client, and world data (never commit) ---
+cluster_win.exe
+cluster_win*.exe
+cluster.exe
+GameAssembly.dll
+UnityPlayer.dll
+global-metadata.dat
+cluster_Data/
+Addressables/
+MonoBleedingEdge/
+baselib.dll
+RuntimeActionBindings.json
+D3D12/
+
+# --- AssetBundle / Unity world archives (never commit) ---
+*.assetbundle
+*.bundle
+*.unity3d
+*.unitypackage
+*.cob
+
+# --- Reverse-engineering artifacts (never commit) ---
+CompiledCode.bin
+CompiledCode.dis.txt
+install_script.iss
+dump.cs
+script.json
+il2cpp.h
+DummyDll/
+
+# --- Secrets and credentials (never commit) ---
+*.env
+.env.*
+*.token
+*.pfx
+*.pem
+credentials/
+
+# --- Editor / OS ---
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
