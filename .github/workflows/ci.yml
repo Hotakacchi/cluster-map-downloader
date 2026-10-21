@@ -1,0 +1,54 @@
+# CI: build + test + policy checks only.
+#
+# IMPORTANT: this workflow performs NO research downloads:
+#   * no client binaries / installers / AssetBundles,
+#   * no undocumented endpoint traffic,
+#   * no third-party research tools (they are runtime-fetched, opt-in).
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-test-policy:
+    name: build + test + repo policy (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET SDK 8.0.x
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore ClusterMapDownloader.sln
+
+      - name: Build (Release)
+        run: dotnet build ClusterMapDownloader.sln -c Release --no-restore --nologo -v minimal
+
+      - name: Test (Release)
+        run: dotnet test ClusterMapDownloader.sln -c Release --no-build --nologo
+
+      - name: Parse-check all PowerShell sources
+        shell: pwsh
+        run: |
+          Import-Module ./scripts/lib/ClusterMapDownloaderSupport.psm1 -Force
+          $files = (Get-ChildItem ./scripts -Recurse -Include *.ps1,*.psm1,*.psd1).FullName
+          if (-not $files) { throw 'no PowerShell files found' }
+          $ok = Test-PsFilesParse -Path $files
+          Get-PsFilesParseErrors | ForEach-Object {
+            Write-Host ("parse error in {0} (line {1}, col {2}): {3}" -f $_.File, $_.Line, $_.Column, $_.Message) }
+          if (-not $ok) { throw 'PowerShell parse check failed' }
+          Write-Host ('parse check OK ({0} files)' -f $files.Count)
+
+      - name: Repository policy check (no binaries/assets/secrets tracked)
+        shell: pwsh
+        run: pwsh ./scripts/check-repo-policy.ps1

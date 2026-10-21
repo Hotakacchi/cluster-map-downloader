@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "project": "cluster-map-downloader",
+    "doc": "Machine-readable notes on the public cluster web API surface used/probed by this tool.",
+    "humanDoc": ["docs/API.md", "docs/RESEARCH.md"],
+    "verified": "October 2026",
+    "policy": "public, unauthenticated endpoints only; a handful of probes; no endpoint enumeration/bruteforce",
+    "secretPolicy": "API-key/token value classes documented in prose only; no key literals in this repository",
+    "userAgent": "cluster-map-downloader/{toolVersion}"
+  },
+  "hosts": {
+    "api": "https://api.cluster.mu",
+    "apiDocsBase": "https://api.cluster.mu/v1",
+    "update": "https://update.cluster.mu",
+    "web": "https://cluster.mu",
+    "fileStorage": "cluster-file-storage (imgix-backed CDN, see metadata URLs)",
+    "telemetry": "cl4r.net (client-side analytics; unused by this tool)"
+  },
+  "headers": {
+    "requiredByTool": {
+      "Accept": "application/json",
+      "User-Agent": "cluster-map-downloader/{toolVersion}",
+      "X-Cluster-App-Version": "web-client app version observed 2026-10 (e.g. 3.103.2610071832); CLI --app-version",
+      "X-Cluster-Build-Version": "web-client build id observed 2026-10 (e.g. 2610141027); CLI --build-version",
+      "X-Cluster-Device": "Web",
+      "X-Cluster-Platform": "Web"
+    },
+    "notes": [
+      "Non-secret build identifiers reproduced from the public web client; overridable per run.",
+      "No Authorization header is ever sent by this tool.",
+      "Plain product token without parentheses (HTTP client comment-splitting caveat)."
+    ]
+  },
+  "endpoints": [
+    {
+      "id": "worlds.getMetadata",
+      "method": "GET",
+      "pathTemplate": "/v1/worlds/{worldId}",
+      "auth": "none (public)",
+      "status": "verified working (200)",
+      "usedByTool": true,
+      "responseShapeRef": "samples/world-metadata.sample.json",
+      "keyFields": ["id", "name", "privacyType", "venueId", "venueSize", "venueUpdatedAt", "webUrl", "creator"],
+      "notes": [
+        "404 with id envelope when world id is unknown/not publicly accessible.",
+        "Unknown/unmodeled response fields are preserved by WorldMetadata.Extra."
+      ]
+    },
+    {
+      "id": "rooms.enterV2",
+      "method": "POST",
+      "pathTemplate": "/v1/rooms/{roomId}/enter_v2",
+      "auth": "Firebase Authorization header (from the normal client session)",
+      "status": "verified: GET probe -> 405 method_not_allowed (POST-only); authenticated flow required",
+      "usedByTool": false,
+      "notes": [
+        "Response embeds RoomEnterResponse.venue (RoomVenue) incl. platformResources manifest.",
+        "This tool stops at the no-auth boundary; see docs/RESEARCH.md section 3."
+      ]
+    },
+    {
+      "id": "rooms.enterInfo",
+      "method": "GET",
+      "pathTemplate": "/v1/rooms/{roomId}/enter_info",
+      "auth": "Firebase Authorization header",
+      "status": "verified: 401 BAD_TOKEN_EXIST without Authorization",
+      "usedByTool": false,
+      "notes": ["Deep-link fetch used before entering; same trust level as enter_v2."]
+    },
+    {
+      "id": "rooms.get",
+      "method": "GET",
+      "pathTemplate": "/v1/rooms/{roomId}",
+      "auth": "none on this route",
+      "status": "verified: 404 UNREGISTERED_ROOM for a room GUID (rooms are runtime sessions)",
+      "usedByTool": false
+    },
+    {
+      "id": "venues.get",
+      "method": "GET",
+      "pathTemplate": "/v1/venues/{venueId}",
+      "auth": "none on the probe",
+      "status": "verified: 405 (PATCH-only management space); also 405 for a world GUID id class",
+      "usedByTool": false
+    },
+    {
+      "id": "worlds.getWithWrongIdClass",
+      "method": "GET",
+      "pathTemplate": "/v1/worlds/{venueId}",
+      "auth": "none",
+      "status": "verified: 404 (id-class mismatch)",
+      "usedByTool": false
+    }
+  ],
+  "errorEnvelope": {
+    "fields": ["id", "code", "status", "detail", "meta"],
+    "observedExamples": [
+      { "status": 401, "code": "BAD_TOKEN_EXIST" },
+      { "status": 404, "code": "UNREGISTERED_ROOM" },
+      { "status": 405, "code": "method_not_allowed" }
+    ]
+  },
+  "clientDeliveryChain": {
+    "summary": "Venue bundle manifest (RoomVenue.platformResources with UnityAsset/UnityResource assetBundleUrl entries) is delivered ONLY via the authenticated room-enter flow.",
+    "loaderClass": "VenueAssetBundleLoaderV2.BundleLoader<T>.LoadAsync(resource, assetBundleUrl, progress)",
+    "http": "UnityWebRequest against absolute assetBundleUrl values from the manifest",
+    "caveat": "Some venue assets pass through AesAssetDecryptor (IAssetDecryptor) after download; raw bytes of such entries are encrypted.",
+    "boundaryDecision": "No public unauthenticated delivery endpoint exists; emulating guest/Firebase authentication is out of scope for this tool. The resolver therefore reports DeliveryStatus.NotImplemented (exit code 2).",
+    "evidence": ["docs/RESEARCH.md sections 3 and 5"]
+  },
+  "clientVersionsObserved": {
+    "webClient": { "appVersion": "3.103.2610071832", "buildVersion": "2610141027" },
+    "desktopClient": { "package": "cluster_win.7z", "appVersion": "3.104.2610141842", "tag": "rc/client/v3.104" }
+  }
+}
