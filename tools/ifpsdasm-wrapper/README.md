@@ -39,5 +39,5 @@ The disassembly output stays local (`.work/`) and is never committed — see
 
 ## License note
 
-`ifpsdasm-wrapper` code in this repository is MIT (same as the project).
+`ifpsdasm-wrapper` code in this repository is GPL-3.0-or-later (same as the project).
 The underlying `IFPSLib` remains MIT-licensed by its authors; see NOTICE.md.

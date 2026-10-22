@@ -252,7 +252,7 @@ internal static class Program
     {
         Console.Out.WriteLine($"{ToolInfo.Name} {ToolInfo.Version}");
         Console.Out.WriteLine(ToolInfo.UnofficialNotice);
-        Console.Out.WriteLine("License: MIT. Third-party notices: NOTICE.md");
+        Console.Out.WriteLine("License: GPL-3.0-or-later. Third-party notices: NOTICE.md");
         return ExitCodes.Success;
     }
 

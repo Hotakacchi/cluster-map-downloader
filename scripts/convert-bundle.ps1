@@ -38,7 +38,8 @@
 
     THE CONVERTED DATA IS COPYRIGHTED BY ITS ORIGINAL CREATORS.
     Keep it for personal study/viewing. Do not redistribute, publish, or reuse
-    it in other projects - it is not covered by this repository's MIT license.
+    it in other projects - it is not covered by this repository's
+    GPL-3.0-or-later license.
 #>
 [CmdletBinding()]
 param(

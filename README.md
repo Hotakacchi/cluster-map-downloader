@@ -437,6 +437,8 @@ Issues and pull requests are welcome — bug fixes, tests, documentation, and
 honest extensions of the download pipeline. The ground rules (full version:
 [docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-boundaries-load-bearing-dont-truck-with-them-casually)):
 
+- Contributions are licensed under the same license as the project
+  ([GPL-3.0-or-later](LICENSE)).
 - **No authentication- or access-control bypass features in any form** —
   such proposals will be declined, including requests to decrypt
   encrypted bundles or extract their keys (out of scope forever).
@@ -449,5 +451,5 @@ honest extensions of the download pipeline. The ground rules (full version:
 
 ## License
 
-Original code: [MIT](LICENSE).
+Original code: [GPL-3.0-or-later](LICENSE) (SPDX: `GPL-3.0-or-later`).
 Third-party acknowledgements: [NOTICE.md](NOTICE.md).
