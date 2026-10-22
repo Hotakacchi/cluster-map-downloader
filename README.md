@@ -168,6 +168,11 @@ honest refusal handling, as-is encrypted bytes.
 4. Files land in the chosen output directory (`<output>\<worldId>\bundles\`
    by default); the manifest lists `fileFormat` + `sha256` per file.
    **Open folder** opens the world directory.
+5. Optional: press **Convert to GLB** to turn this run's plain `.win`
+   bundles into glTF scene models (see section 7). First use asks for a
+   one-time consent to fetch the AssetRipper engine into `.work/third-party`
+   (GPL-3.0, never committed); progress is streamed into the same log, and
+   **Cancel** stops the conversion (killing the converter tree cleanly).
 
 Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
 --auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
@@ -272,7 +277,9 @@ All of these download only research artifacts into `downloads/` / `.work/`
 A downloaded `unityfs-plain` bundle can be turned into portable glTF 2.0
 (`GLB`) model data via AssetRipper (GPL-3.0 open source), which is fetched at
 runtime into `.work/third-party/` (git-ignored, never vendored) only when you
-explicitly pass `-FetchTool`:
+explicitly pass `-FetchTool`. The GUI offers the same conversion as a
+**Convert to GLB** button right after a successful download (same script, same
+consent before any fetch):
 
 ```powershell
 pwsh .\scripts\convert-bundle.ps1 \

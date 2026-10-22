@@ -1,14 +1,17 @@
 using System.Diagnostics;
+using System.Text;
 using ClusterMapDownloader;
 using ClusterMapDownloader.GuestEntry;
 
 namespace ClusterMapDownloader.Gui;
 
 /// <summary>
-/// Minimal Japanese-language paste-a-URL GUI on top of the pipeline. It enters
-/// the documented opt-in guest-entry flow automatically (that is the GUI's
-/// purpose) while keeping every repo policy: masked tokens, in-memory-only
-/// credentials, honest refusal reporting, no decryption.
+/// Minimal English-language paste-a-URL GUI on top of the pipeline: download
+/// one public world (guest-entry flow), then optionally convert the downloaded
+/// plain UnityFS bundles into ONE glTF/GLB scene model for three.js/Unity via
+/// scripts/convert-bundle.ps1. It keeps every repo policy: masked tokens,
+/// in-memory-only credentials, honest refusal reporting, no decryption,
+/// personal-use-only conversion outputs.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -18,10 +21,13 @@ public sealed class MainForm : Form
     private readonly Button downloadButton;
     private readonly Button cancelButton;
     private readonly Button openFolderButton;
+    private readonly Button convertButton;
     private readonly ProgressBar progressBar;
     private readonly Label statusLabel;
     private readonly bool autoClose;
     private string? lastWorldDir;
+    private readonly List<string> lastPlainBundles = new();
+    private Process? convertProcess;
     private CancellationTokenSource? cts;
 
     public MainForm(string? presetUrl, string? presetOutput, bool autoCloseRequested)
@@ -56,6 +62,13 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Enabled = false,
         };
+        convertButton = new Button
+        {
+            Text = "Convert to GLB",
+            Dock = DockStyle.Fill,
+            Enabled = false,
+        };
+        convertButton.Click += async (_, _) => await RunConversionAsync().ConfigureAwait(true);
         openFolderButton.Click += (_, _) =>
         {
             if (lastWorldDir is { } dir && Directory.Exists(dir))
@@ -81,7 +94,17 @@ public sealed class MainForm : Form
         };
 
         downloadButton.Click += async (_, _) => await RunDownloadAsync().ConfigureAwait(true);
-        cancelButton.Click += (_, _) => cts?.Cancel();
+        cancelButton.Click += (_, _) =>
+        {
+            if (convertProcess is { HasExited: false })
+            {
+                KillConversion();
+            }
+            else
+            {
+                cts?.Cancel();
+            }
+        };
 
         var layoutRoot = new TableLayoutPanel
         {
@@ -137,13 +160,15 @@ public sealed class MainForm : Form
         };
         layoutRoot.Controls.Add(browse, 2, 1);
 
-        var buttonRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Height = 40 };
-        buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        var buttonRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Height = 40 };
+        buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
         buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
-        buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+        buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
         buttonRow.Controls.Add(downloadButton, 0, 0);
         buttonRow.Controls.Add(cancelButton, 1, 0);
         buttonRow.Controls.Add(openFolderButton, 2, 0);
+        buttonRow.Controls.Add(convertButton, 3, 0);
         layoutRoot.Controls.Add(buttonRow, 0, 2);
         layoutRoot.SetColumnSpan(buttonRow, 3);
 
@@ -177,7 +202,14 @@ public sealed class MainForm : Form
         }
 
         AcceptButton = downloadButton;
-        FormClosing += (_, _) => cts?.Cancel();
+        FormClosing += (_, _) =>
+        {
+            cts?.Cancel();
+            if (convertProcess is { HasExited: false })
+            {
+                KillConversion();
+            }
+        };
     }
 
     private async Task RunDownloadAsync()
@@ -284,7 +316,8 @@ public sealed class MainForm : Form
         switch (result.Outcome)
         {
             case WorldDownloadOutcome.Success:
-                statusLabel.Text = $"Done — {result.Files.Count} file(s) saved.";
+                statusLabel.Text = $"Done - {result.Files.Count} file(s) saved.";
+                OnDownloadProducedBundles(result);
                 if (autoClose)
                 {
                     BeginInvoke(new Action(Close));
@@ -330,6 +363,7 @@ public sealed class MainForm : Form
     private void SetBusy(bool busy)
     {
         downloadButton.Enabled = !busy;
+        convertButton.Enabled = !busy && lastPlainBundles.Count > 0;
         cancelButton.Enabled = busy;
         if (busy)
         {
@@ -341,6 +375,288 @@ public sealed class MainForm : Form
             openFolderButton.Enabled = lastWorldDir is not null && Directory.Exists(lastWorldDir);
             progressBar.Visible = false;
         }
+    }
+
+    private void OnDownloadProducedBundles(WorldDownloadResult result)
+    {
+        // Remember the plain UnityFS bundles (.win) of this successful run; the
+        // conversion button converts exactly these files, nothing else.
+        lastPlainBundles.Clear();
+        foreach (var file in result.Files)
+        {
+            if (file.FileFormat == "unityfs-plain" &&
+                file.RelativeFileName.EndsWith(".win", StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(file.AbsolutePath))
+            {
+                lastPlainBundles.Add(Path.GetFullPath(file.AbsolutePath));
+            }
+        }
+
+        if (lastPlainBundles.Count > 0)
+        {
+            AppendLog(
+                $"[cv] {lastPlainBundles.Count} plain bundle(s) ready for conversion (press \"Convert to GLB\").");
+        }
+        else
+        {
+            AppendLog("[cv] no plain UnityFS bundles in this download; conversion unavailable " +
+                      "(encrypted files are never converted).");
+        }
+    }
+
+    private sealed record ConversionContext(string PWshPath, string RepoRoot, string ScriptPath, string ToolExePath);
+
+    private ConversionContext? ResolveConversionContext()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", ".."));
+        var script = Path.Combine(repoRoot, "scripts", "convert-bundle.ps1");
+        if (!File.Exists(script))
+        {
+            MessageBox.Show(
+                this,
+                "The conversion script was not found at:\n" + script +
+                "\n\nRun the GUI from the repository layout (see README section 7).",
+                "Script missing",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return null;
+        }
+
+        var pwsh = FindPWsh();
+        if (pwsh is null)
+        {
+            MessageBox.Show(
+                this,
+                "PowerShell 7 (pwsh.exe) is required for conversion but was not found.\n" +
+                "Install it from https://aka.ms/powershell and try again.",
+                "PowerShell 7 missing",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return null;
+        }
+
+        var toolExe = Path.Combine(repoRoot, ".work", "third-party", "assetripper", "tool",
+            "AssetRipper.GUI.Free.exe");
+        return new ConversionContext(pwsh, repoRoot, script, toolExe);
+    }
+
+    private static string? FindPWsh()
+    {
+        var candidates = new[]
+        {
+            "pwsh",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "PowerShell", "7", "pwsh.exe"),
+        };
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                using var probe = Process.Start(new ProcessStartInfo
+                {
+                    FileName = candidate,
+                    Arguments = "-NoProfile -Command exit 0",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                });
+                if (probe is null)
+                {
+                    continue;
+                }
+
+                var exited = probe.WaitForExit(5000);
+                if (!exited)
+                {
+                    try { probe.Kill(true); } catch { }
+                }
+
+                return candidate;
+            }
+            catch (Exception)
+            {
+                // try the next candidate
+            }
+        }
+
+        return null;
+    }
+
+    private void KillConversion()
+    {
+        // Kill the whole pwsh process tree (incl. the AssetRipper child);
+        // TaskKill keeps the cleanup honest even when the script's finally
+        // blocks cannot run anymore.
+        if (convertProcess is not { HasExited: false } process)
+        {
+            return;
+        }
+
+        try
+        {
+            using var killer = Process.Start(new ProcessStartInfo
+            {
+                FileName = "taskkill",
+                Arguments = $"/T /F /PID {process.Id}",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            });
+            _ = killer?.WaitForExit(3000);
+        }
+        catch
+        {
+            try { process.Kill(true); } catch { }
+        }
+    }
+
+    private async Task RunConversionAsync()
+    {
+        if (lastPlainBundles.Count == 0)
+        {
+            MessageBox.Show(this, "Download a world first; conversion works on the" +
+                " plain UnityFS bundles of a finished download.", "Nothing to convert",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (ResolveConversionContext() is not { } context)
+        {
+            return;
+        }
+
+        var fetchSwitch = string.Empty;
+        if (!File.Exists(context.ToolExePath))
+        {
+            var choice = MessageBox.Show(
+                this,
+                "The conversion engine (AssetRipper, GPL-3.0 open source, ~80 MB on disk) " +
+                "is not present yet.\n\n" +
+                "Fetch it once now? It stays in .work (git-ignored, never committed).",
+                "Fetch conversion tool?",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (choice != DialogResult.Yes)
+            {
+                statusLabel.Text = "Conversion stopped: tool not fetched.";
+                return;
+            }
+
+            fetchSwitch = " -FetchTool";
+        }
+
+        SetBusy(true);
+        try
+        {
+            statusLabel.Text = $"Converting {lastPlainBundles.Count} bundle(s)...";
+            AppendLog($"[cv] converting {lastPlainBundles.Count} bundle(s) " +
+                      $"(AssetRipper engine, GPL-3.0; output: converted\\ under the world folder).");
+            for (var i = 0; i < lastPlainBundles.Count; i++)
+            {
+                statusLabel.Text = $"Converting bundle {i + 1}/{lastPlainBundles.Count}...";
+                var bundle = lastPlainBundles[i];
+                AppendLog($"[cv] bundle {i + 1}/{lastPlainBundles.Count}: {Path.GetFileName(bundle)}");
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = context.PWshPath,
+                    Arguments =
+                        $"-NoProfile -ExecutionPolicy Bypass -File \"{context.ScriptPath}\"{fetchSwitch}" +
+                        $" -Bundle \"{bundle}\"",
+                    WorkingDirectory = context.RepoRoot,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
+                };
+                Process? process = null;
+                try
+                {
+                    process = Process.Start(startInfo);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("[cv] could not start pwsh: " + SecretMasker.Mask(ex.Message));
+                }
+
+                if (process is null)
+                {
+                    statusLabel.Text = "Conversion failed to start.";
+                    break;
+                }
+
+                convertProcess = process;
+                var stdoutTask = PumpToLogAsync(process.StandardOutput);
+                var stderrTask = PumpToLogAsync(process.StandardError);
+                await process.WaitForExitAsync().ConfigureAwait(true);
+                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(true);
+                convertProcess = null;
+
+                var code = process.ExitCode;
+                if (code == 0)
+                {
+                    statusLabel.Text = $"Converted {i + 1}/{lastPlainBundles.Count}.";
+                }
+                else
+                {
+                    var reason = code switch
+                    {
+                        2 => "not plain UnityFS (honest skip, no decryption)",
+                        3 => "conversion tool missing/usage error",
+                        _ => "see log above",
+                    };
+                    statusLabel.Text = $"Bundle {i + 1}/{lastPlainBundles.Count}: {reason}.";
+                    AppendLog($"[cv] exit code {code}: {reason}.");
+                    if (code == 3)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (convertProcess is null && lastPlainBundles.Count > 0)
+            {
+                statusLabel.Text = "Done - results in the converted folder (Open folder shows the world dir).";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusLabel.Text = "Conversion error.";
+            AppendLog("[cv] " + SecretMasker.Mask(ex.Message));
+            try
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "gui-crash.log"), ex.ToString());
+            }
+            catch
+            {
+                // best effort
+            }
+
+            MessageBox.Show(
+                this,
+                SecretMasker.Mask(ex.Message) + "\n\n(Details: gui-crash.log)",
+                "Conversion error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            convertProcess = null;
+            SetBusy(false);
+        }
+    }
+
+    private async Task PumpToLogAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync().ConfigureAwait(true) is { } line)
+        {
+            AppendLog(line);
+        }
+    }
+
+    private void AppendLog(string line)
+    {
+        BeginInvoke(() => logBox.AppendText(line + Environment.NewLine));
     }
 
     private sealed class GuiProgressNotifier(Form owner, TextBox logBox) : IProgressNotifier
