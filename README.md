@@ -1,8 +1,9 @@
 # cluster-map-downloader
 
 An unofficial, open-source research project for downloading **publicly
-accessible** [cluster.mu](https://cluster.mu/) world/map data without a
-normal installation of the cluster desktop application.
+accessible** [cluster.mu](https://cluster.mu/) world/map data — reproducing
+the same anonymous guest flow a fresh, free client performs, with no account,
+no authentication bypass, and no decryption.
 
 > **Status: research complete; AssetBundle delivery available as an explicit
 > opt-in mode** — public world metadata and venue-ID resolution are
@@ -17,6 +18,25 @@ normal installation of the cluster desktop application.
 
 This project is **not affiliated with Cluster, Inc.** (see
 [Legal / content notice](#legal--content-notice)).
+
+## Quick start
+
+```powershell
+# 1. clone this repository
+# 2. build + publish the CLI and the GUI into artifacts-local\ (git-ignored):
+pwsh .\scripts\bootstrap.ps1
+# 3. launch the paste-a-URL GUI:
+.\artifacts-local\gui\cluster-map-downloader-gui.exe
+# … or drive the CLI directly for one public world:
+.\artifacts-local\cli\cluster-map-downloader.exe download https://cluster.mu/w/<WORLD_ID> --guest-entry
+```
+
+There are **no official prebuilt releases** — the tools are built locally by
+the bootstrap script; see [Requirements](#requirements) and
+[Usage](#usage). By default the CLI stops at the documented
+no-authentication boundary (`--guest-entry` below is the one opt-in the
+whole tool is built around); the GUI always runs that documented opt-in
+flow, with every policy described here.
 
 ## Status
 
@@ -52,10 +72,10 @@ It does **not** fake a completed download.
   and hashed (`sha256`, manifest integrity column) — plain labeling only,
   never decryption.
 - A paste-a-URL Windows GUI (`cluster-map-downloader-gui.exe`, Japanese UI):
-  enter the world URL, press ダウンロード, watch byte-level progress; the
-  public client-shipped identifier is auto-discovered from an installed
-  cluster client, tokens stay in memory, and refusal outcomes are reported
-  honestly (no circumvention).
+  enter the world URL, press ダウンロード (Download), watch byte-level
+  progress; the public client-shipped identifier is auto-discovered from an
+  installed cluster client, tokens stay in memory, and refusal outcomes are
+  reported honestly (no circumvention).
 - Reusable PowerShell bootstrap / installer-extraction / binary-analysis
   scripts for the research workflow.
 - `ifpsdasm-wrapper`, a small .NET 8 tool that turns the Cluster installer's
@@ -100,18 +120,21 @@ provide, the tool stops at that point and says so.
 
 ## Requirements
 
-- Windows 10/11 (the project itself is cross-platform; the research
-  artifacts being analyzed are Windows binaries). The GUI additionally
-  requires Windows with .NET 8 Desktop Runtime available either directly or
-  via a SDK install (the bootstrap publishes it locally; no installer).
-- [.NET SDK 8.0](https://dotnet.microsoft.com/download) or a newer SDK
-  (e.g. 9.x can build the `net8.0` targets).
+- Windows 10/11. The library/tests are cross-platform .NET 8 (they build on
+  non-Windows hosts too), but the research artifacts being analyzed and the
+  GUI are Windows-focused.
+- [.NET 8 SDK](https://dotnet.microsoft.com/download) or newer (e.g. 9.x can
+  build the `net8.0` targets). The GUI needs the **.NET 8 Desktop Runtime** —
+  an SDK install on Windows satisfies this.
 - PowerShell 7 (`pwsh`) recommended; scripts are largely compatible with
   Windows PowerShell 5.1.
-- `git` (used to fetch third-party libraries; nothing requires this repo to
-  BE a git checkout for the library usage).
+- `git` (used to fetch third-party research tools; the library itself does
+  not require a git checkout).
 - Optional, for installer research: `7-Zip` (to open `innounp`'s `.rar`) and
-  an internet connection to fetch `innounp` and `IFPSTools.NET` locally.
+  internet access to fetch `innounp` and `IFPSTools.NET` locally.
+- Distributions: there are **no official prebuilt releases**; everything is
+  built locally into the git-ignored `artifacts-local\` by
+  `scripts/bootstrap.ps1`. Nothing is installed system-wide.
 
 ## Usage
 
@@ -125,7 +148,31 @@ pwsh .\scripts\bootstrap.ps1 -WithAnalysisTools  # Cpp2IL + Il2CppDumper release
 pwsh .\scripts\bootstrap.ps1 -RunTests           # also run the unit test suite
 ```
 
-### 2. Download a world
+### 2. GUI (Windows, paste-a-URL) — the quickest way
+
+`bootstrap.ps1` publishes a small WinForms GUI to
+`artifacts-local\gui\cluster-map-downloader-gui.exe` (Japanese UI). It always
+runs the explicit opt-in guest-entry flow described in section 4 — that is
+the GUI's whole purpose — with the same policies: single world, in-memory
+tokens, honest refusal handling, as-is encrypted bytes.
+
+1. Launch `cluster-map-downloader-gui.exe`.
+2. Paste `https://cluster.mu/w/<WORLD_ID>`.
+3. Press **ダウンロード** (Download); progress (per-file, byte-level) and a
+   log are shown.
+4. Files land in the chosen 保存先 (output directory;
+   `<output>\<worldId>\bundles\` by default); the manifest lists
+   `fileFormat` + `sha256` per file. **保存フォルダを開く** (Open output
+   folder) opens the world directory.
+
+Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
+--auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
+exits when the run finishes. The public client-shipped Firebase identifier is
+discovered automatically from the locally installed cluster client
+(registry-declared install location / well-known dirs); there is nothing else
+to configure.
+
+### 3. Download a world (CLI wrapper)
 
 ```powershell
 .\scripts\download-world.ps1 `
@@ -140,7 +187,7 @@ Switches:
 .\scripts\download-world.ps1 -WorldUrl "https://cluster.mu/w/<WORLD_ID>" -DryRun -Json
 ```
 
-### 3. The AssetBundle stage — explicit opt-in (`--guest-entry`)
+### 4. The AssetBundle stage — explicit opt-in (`--guest-entry`)
 
 By default (no flags) the tool stops at the delivery boundary with exit `2`.
 The opt-in mode reproduces the normal public client guest flow for **one
@@ -175,28 +222,6 @@ What this mode does / does not do (details:
   bundles are saved as encrypted bytes (no decryption, no key extraction);
 * you are responsible for complying with cluster's Terms of Service and for
   respecting creators' rights (see [Legal](#legal--content-notice)).
-
-### 4. GUI (Windows, paste-a-URL)
-
-`bootstrap.ps1` also publishes a small WinForms GUI to
-`artifacts-local\gui\cluster-map-downloader-gui.exe` (Japanese UI). It always
-runs the explicit opt-in guest-entry flow described above — that is the GUI's
-whole purpose — with the same policies: single world, in-memory tokens,
-honest refusal handling, as-is encrypted bytes.
-
-1. Launch `cluster-map-downloader-gui.exe`.
-2. Paste `https://cluster.mu/w/<WORLD_ID>`.
-3. Press **ダウンロード**; progress (per-file, byte-level) and a log are shown.
-4. Files land in the chosen 保存先 (`output\<worldId>\bundles\` by default);
-   the manifest lists `fileFormat` + `sha256` per file. **保存フォルダを開く**
-   opens the world directory.
-
-Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
---auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
-exits when the run finishes. The public client-shipped Firebase identifier is
-discovered automatically from the locally installed cluster client
-(registry-declared install location / well-known dirs); there is nothing else
-to configure.
 
 ### 5. CLI equivalent
 
@@ -326,15 +351,36 @@ Boundary decision narrative + the opt-in guest-entry mode:
 
 ```powershell
 pwsh .\scripts\bootstrap.ps1 -RunTests
-dotnet test ClusterMapDownloader.sln
-pwsh .\scripts\check-repo-policy.ps1   # verifies no forbidden artefacts are tracked
+dotnet test ClusterMapDownloader.sln                       # 69 tests
+pwsh .\scripts\check-repo-policy.ps1                       # tracked-content policy (git mode)
+pwsh .\scripts\check-repo-policy.ps1 -NoGit                # whole-tree secret scan (edge case)
 ```
+
+CI (`.github/workflows/ci.yml`, windows-latest) runs build + tests +
+PowerShell parse checks + the repository policy check on every push / PR to
+`main` — and never performs research downloads.
 
 Project layout and pipeline internals:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 A synthetic metadata schema sample lives at
 [`samples/world-metadata.sample.json`](samples/world-metadata.sample.json);
 tests must not embed a real copyrighted world's data.
+
+## Contributing
+
+Issues and pull requests are welcome — bug fixes, tests, documentation, and
+honest extensions of the download pipeline. The ground rules (full version:
+[docs/ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-boundaries-load-bearing-dont-truck-with-them-casually)):
+
+- **No authentication- or access-control bypass features in any form** —
+  such proposals will be declined, including requests to decrypt
+  encrypted bundles or extract their keys (out of scope forever).
+- Run the test suite and both `check-repo-policy.ps1` modes before
+  submitting; CI enforces the same checks.
+- Never commit client binaries, world/AssetBundle data, tokens, cookies, or
+  temporary signed URLs — the policy check blocks them.
+- Security-relevant behavior and secret handling are documented in
+  [SECURITY.md](SECURITY.md).
 
 ## License
 
