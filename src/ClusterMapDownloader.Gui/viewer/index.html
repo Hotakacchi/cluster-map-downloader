@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cluster-map-downloader - in-app 3D viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; left: 10px; top: 8px; z-index: 3; max-width: 92%;
+    color: #b7bec7; font: 12px/1.5 Consolas, monospace;
+    background: rgba(12, 14, 18, .62); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 6px; padding: 6px 10px; white-space: pre;
+  }
+  #info {
+    position: fixed; left: 10px; bottom: 10px; z-index: 3; max-width: 92%;
+    color: #9aa3ad; font: 12px/1.5 Consolas, monospace;
+    background: rgba(12, 14, 18, .62); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 6px; padding: 6px 10px; white-space: pre;
+  }
+  #overlay {
+    position: fixed; inset: 0; z-index: 2; display: flex; align-items: center;
+    justify-content: center; flex-direction: column; gap: 14px;
+    color: #d9dee4; font: 14px/1.6 Consolas, monospace; text-align: center;
+    background: rgba(10, 12, 16, .84);
+  }
+  #overlay.error { color: #e99; }
+  #progwrap { display: block; width: 320px; height: 8px; background: #262a31; border-radius: 4px; overflow: hidden; }
+  #progfill { display: block; width: 0%; height: 100%; background: #4d8ed8; transition: width .12s linear; }
+  #overlay b { font-weight: 700; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">Click the view to grab the mouse
+WASD move | Space up | C down | Shift fast | R reset camera | Esc release mouse</div>
+<div id="info">loading...</div>
+<div id="overlay">
+  <div id="ovmsg">Loading model...</div>
+  <span id="progwrap"><span id="progfill"></span></span>
+</div>
+<script type="module" src="./viewer.js"></script>
+</body>
+</html>

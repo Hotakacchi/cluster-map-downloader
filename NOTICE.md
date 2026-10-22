@@ -15,9 +15,9 @@ committed to the repository and must not be redistributed.
 ## Third-party components
 
 No third-party binaries or source code are vendored in this repository.
-The following tools are downloaded and built locally by
-`scripts/bootstrap.ps1` (`-WithTools` / `-WithAnalysisTools`) on demand and
-remain in ignored working directories:
+The following tools are downloaded, installed, or resolved from their
+official ecosystems (bootstrap scripts, NuGet, CDN) on demand and are never
+committed; runtime-fetched executables stay in ignored working directories:
 
 | Component | License | Source | Used for |
 |---|---|---|---|
@@ -27,6 +27,8 @@ remain in ignored working directories:
 | [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL) | MIT | GitHub releases (optional, fetched manually) | Alternative IL2CPP assembly analysis |
 | [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) v6.7.46 | MIT | GitHub releases (`Il2CppDumper-net6` zip; fetched by `-WithAnalysisTools`) | Dumping IL2CPP class/method surface from `GameAssembly.dll` + `global-metadata.dat` (`dotnet <dir>/Il2CppDumper.dll …`) |
 | [AssetRipper](https://github.com/AssetRipper/AssetRipper) 2.0.0 (Free edition) | GNU GPL-3.0-or-later | GitHub releases zip (`AssetRipper_win_x64.zip`; fetched locally at runtime by `scripts/convert-bundle.ps1 -FetchTool` only) | Converting downloaded `unityfs-plain` world bundles into glTF 2.0 (GLB) scene models via its headless local WebUI (`POST /LoadFile` → `POST /Export/PrimaryContent`) |
+| [three.js](https://github.com/mrdoob/three.js) r0.170.0 (viewer) | MIT | imported from the jsDelivr CDN by the viewer pages at view time (the in-app `ViewerForm` WebView2 host and the browser viewer); never vendored | Rendering converted GLB scene models (three.js/Blender-style generic 3D data) |
+| [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2) 1.0.4258.31 (GUI) | MIT | NuGet package (build-time reference); the WebView2 Runtime itself is a standard Windows component | Host control for the GUI's in-app 3D viewer page |
 
 If you reproduce the maintainers' documentation, keep the attributions above.
 Do not commit any of these tools' binaries, their source, or any files they

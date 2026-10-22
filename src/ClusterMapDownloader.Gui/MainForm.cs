@@ -25,13 +25,17 @@ public sealed class MainForm : Form
     private readonly Button convertButton;
     private readonly Button refreshPastButton;
     private readonly ComboBox pastBox;
+    private readonly Button viewButton;
+    private readonly ComboBox modelsBox;
     private readonly ProgressBar progressBar;
     private readonly Label statusLabel;
     private readonly bool autoClose;
     private string? lastWorldDir;
     private readonly List<string> lastPlainBundles = new();
     private readonly Dictionary<string, string> pastWorlds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> viewerModels = new(StringComparer.OrdinalIgnoreCase);
     private bool suppressPastSelection;
+    private bool suppressModelsSelection;
     private Process? convertProcess;
     private CancellationTokenSource? cts;
 
@@ -40,8 +44,8 @@ public sealed class MainForm : Form
         autoClose = autoCloseRequested;
 
         Text = "cluster-map-downloader";
-        MinimumSize = new Size(760, 480);
-        Size = new Size(880, 640);
+        MinimumSize = new Size(760, 512);
+        Size = new Size(880, 672);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
 
@@ -77,6 +81,14 @@ public sealed class MainForm : Form
         refreshPastButton = new Button { Text = "Refresh", Dock = DockStyle.Fill };
         refreshPastButton.Click += (_, _) => RefreshPastDownloads(null);
         pastBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        viewButton = new Button
+        {
+            Text = "Open 3D viewer",
+            Dock = DockStyle.Fill,
+            Enabled = false,
+        };
+        viewButton.Click += (_, _) => OpenViewer();
+        modelsBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         openFolderButton.Click += (_, _) =>
         {
             if (lastWorldDir is { } dir && Directory.Exists(dir))
@@ -118,21 +130,22 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 8,
+            RowCount = 9,
             Padding = new Padding(10),
         };
-        // 0..6 auto rows (URL / path / past / buttons / bar / status / footer-ish), 6 is the log, 7 footer.
+        // 0..7 auto rows (URL / path / past / models / buttons / bar / status / footer-ish), 7 is the log.
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 0: URL
         layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 1: output dir
         layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 2: past downloads
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 3: buttons
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 4: progress bar
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 5: status
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // row 6: log (fills)
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 7: footer note
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 3: converted models
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 4: buttons
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 5: progress bar
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 6: status
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // row 7: log (fills)
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 8: footer note
 
         var urlLabel = new Label
         {
@@ -182,6 +195,17 @@ public sealed class MainForm : Form
         pastBox.SelectedIndexChanged += (_, _) => OnPastSelectionChanged();
         outputBox.Leave += (_, _) => RefreshPastDownloads(null);
 
+        var modelsLabel = new Label
+        {
+            Text = "Converted models:",
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 6, 6, 0),
+        };
+        layoutRoot.Controls.Add(modelsLabel, 0, 3);
+        layoutRoot.Controls.Add(modelsBox, 1, 3);
+        layoutRoot.Controls.Add(viewButton, 2, 3);
+        modelsBox.SelectedIndexChanged += (_, _) => OnModelsSelectionChanged();
+
         var buttonRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Height = 40 };
         buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
         buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
@@ -191,14 +215,14 @@ public sealed class MainForm : Form
         buttonRow.Controls.Add(cancelButton, 1, 0);
         buttonRow.Controls.Add(openFolderButton, 2, 0);
         buttonRow.Controls.Add(convertButton, 3, 0);
-        layoutRoot.Controls.Add(buttonRow, 0, 3);
+        layoutRoot.Controls.Add(buttonRow, 0, 4);
         layoutRoot.SetColumnSpan(buttonRow, 3);
 
-        layoutRoot.Controls.Add(progressBar, 0, 4);
+        layoutRoot.Controls.Add(progressBar, 0, 5);
         layoutRoot.SetColumnSpan(progressBar, 3);
-        layoutRoot.Controls.Add(statusLabel, 0, 5);
+        layoutRoot.Controls.Add(statusLabel, 0, 6);
         layoutRoot.SetColumnSpan(statusLabel, 3);
-        layoutRoot.Controls.Add(logBox, 0, 6);
+        layoutRoot.Controls.Add(logBox, 0, 7);
         layoutRoot.SetColumnSpan(logBox, 3);
 
         var footer = new Label
@@ -208,7 +232,7 @@ public sealed class MainForm : Form
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
         };
-        layoutRoot.Controls.Add(footer, 0, 7);
+        layoutRoot.Controls.Add(footer, 0, 8);
         layoutRoot.SetColumnSpan(footer, 3);
 
         Controls.Add(layoutRoot);
@@ -393,6 +417,7 @@ public sealed class MainForm : Form
         downloadButton.Enabled = !busy;
         convertButton.Enabled = !busy && lastPlainBundles.Count > 0;
         cancelButton.Enabled = busy;
+        viewButton.Enabled = !busy && IsModelSelected();
         if (busy)
         {
             openFolderButton.Enabled = false;
@@ -403,6 +428,13 @@ public sealed class MainForm : Form
             openFolderButton.Enabled = lastWorldDir is not null && Directory.Exists(lastWorldDir);
             progressBar.Visible = false;
         }
+    }
+
+    private bool IsModelSelected()
+    {
+        return modelsBox.SelectedItem is string display &&
+               viewerModels.TryGetValue(display, out var path) &&
+               File.Exists(path);
     }
 
     private void OnDownloadProducedBundles(WorldDownloadResult result)
@@ -509,6 +541,7 @@ public sealed class MainForm : Form
         pastWorlds.TryGetValue(pastBox.SelectedItem as string ?? string.Empty, out var dir);
         if (dir is null)
         {
+            ClearConvertedModels();
             return;
         }
 
@@ -577,6 +610,173 @@ public sealed class MainForm : Form
             AppendLog("[cv] no plain UnityFS bundles in this folder; conversion unavailable " +
                       "(encrypted files are never converted).");
         }
+
+        // Offer everything already converted for this world (past conversions too).
+        RefreshConvertedModels(null);
+    }
+
+    // ---- Converted models (viewer) ----------------------------------------
+
+    /// <summary>
+    /// Rescans the selected world's converted GLBs (scene first, then per-mesh
+    /// exports), newest first, and repopulates the models picker.
+    /// </summary>
+    private void RefreshConvertedModels(string? selectPath)
+    {
+        string? keepPath = viewerModels.TryGetValue(modelsBox.SelectedItem as string ?? string.Empty, out var previous)
+            ? previous
+            : null;
+        string? selectedDisplay = null;
+        suppressModelsSelection = true;
+        try
+        {
+            modelsBox.Items.Clear();
+            viewerModels.Clear();
+
+            var candidates = new List<(string Path, DateTime Stamp)>();
+            if (lastWorldDir is { } worldDir)
+            {
+                var sceneDir = Path.Combine(worldDir, "converted", "scene");
+                var meshesDir = Path.Combine(worldDir, "converted", "meshes");
+                foreach (var dir in new[] { sceneDir, meshesDir })
+                {
+                    if (!Directory.Exists(dir))
+                    {
+                        continue;
+                    }
+
+                    foreach (var file in Directory.EnumerateFiles(dir, "*.glb"))
+                    {
+                        candidates.Add((file, File.GetLastWriteTimeUtc(file)));
+                    }
+                }
+            }
+
+            foreach (var (path, _) in candidates
+                         .OrderByDescending(entry => entry.Stamp)
+                         .ThenBy(entry => Path.GetFileName(entry.Path), StringComparer.OrdinalIgnoreCase))
+            {
+                var parent = Path.GetFileName(Path.GetDirectoryName(path)) ?? "converted";
+                var name = $"{parent}\\{Path.GetFileName(path)}";
+                var display = name;
+                for (var suffix = 2; viewerModels.ContainsKey(display); suffix++)
+                {
+                    display = $"{name} ({suffix})";
+                }
+
+                viewerModels[display] = path;
+                modelsBox.Items.Add(display);
+
+                var wanted = selectPath ?? keepPath;
+                if (wanted is null && selectedDisplay is null ||
+                    wanted is not null && string.Equals(
+                        Path.GetFullPath(wanted), path, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedDisplay ??= display;
+                }
+            }
+
+            if (selectedDisplay is null && modelsBox.Items.Count > 0)
+            {
+                selectedDisplay = (string)modelsBox.Items[0]!; // newest result wins
+            }
+        }
+        finally
+        {
+            suppressModelsSelection = false;
+        }
+
+        modelsBox.SelectedItem = selectedDisplay; // fires OnModelsSelectionChanged when set
+        if (selectedDisplay is null)
+        {
+            viewButton.Enabled = false;
+        }
+    }
+
+    private void ClearConvertedModels()
+    {
+        suppressModelsSelection = true;
+        try
+        {
+            modelsBox.Items.Clear();
+            viewerModels.Clear();
+        }
+        finally
+        {
+            suppressModelsSelection = false;
+        }
+
+        modelsBox.SelectedItem = null;
+        viewButton.Enabled = false;
+    }
+
+    private void OnModelsSelectionChanged()
+    {
+        if (suppressModelsSelection)
+        {
+            return;
+        }
+
+        if (modelsBox.SelectedItem is not string display ||
+            !viewerModels.TryGetValue(display, out var path))
+        {
+            viewButton.Enabled = false;
+            return;
+        }
+
+        if (!File.Exists(path))
+        {
+            viewButton.Enabled = false;
+            AppendLog("[vw] model file is missing: " + path);
+            return;
+        }
+
+        var size = new FileInfo(path).Length;
+        AppendLog($"[vw] selected: {display} ({FileDownloader.FormatBytes(size)}) - press \"Open 3D viewer\".");
+        viewButton.Enabled = true;
+    }
+
+    private void OpenViewer()
+    {
+        if (!IsModelSelected())
+        {
+            MessageBox.Show(this, "Select a converted model first (Converted models).", "No model",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var viewerRoot = Path.Combine(AppContext.BaseDirectory, "viewer");
+        if (!File.Exists(Path.Combine(viewerRoot, "index.html")))
+        {
+            MessageBox.Show(
+                this,
+                "The bundled viewer page was not found at:\n" + viewerRoot +
+                "\n\nRe-publish the GUI (scripts/bootstrap.ps1) and try again.",
+                "Viewer missing",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        _ = viewerModels.TryGetValue(modelsBox.SelectedItem as string ?? string.Empty, out var modelPath);
+        if (modelPath is null)
+        {
+            return;
+        }
+
+        if (!ViewerForm.IsWebView2RuntimeAvailable())
+        {
+            MessageBox.Show(
+                this,
+                "The WebView2 Runtime is required for the in-app 3D viewer but is not installed.\n\n" +
+                "Install it once from https://developer.microsoft.com/microsoft-edge/webview2/ and try again.",
+                "WebView2 Runtime missing",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        new ViewerForm(modelPath, viewerRoot, Text).Show(this);
     }
 
     private static string? ReadSnapshotName(string worldDir)
@@ -890,6 +1090,11 @@ public sealed class MainForm : Form
         {
             convertProcess = null;
             SetBusy(false);
+            if (lastWorldDir is not null)
+            {
+                // Pick up the (possibly new) GLBs; auto-selects the newest.
+                RefreshConvertedModels(null);
+            }
         }
     }
 

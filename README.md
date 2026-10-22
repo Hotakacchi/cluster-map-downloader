@@ -134,6 +134,9 @@ provide, the tool stops at that point and says so.
   an SDK install on Windows satisfies this.
 - PowerShell 7 (`pwsh`) recommended; scripts are largely compatible with
   Windows PowerShell 5.1.
+- For the GUI's in-app 3D viewer: the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+  (preinstalled on current Windows 10/11; the GUI detects a missing runtime
+  and says so) plus internet access for the first viewer open (three.js CDN).
 - `git` (used to fetch third-party research tools; the library itself does
   not require a git checkout).
 - Optional, for installer research: `7-Zip` (to open `innounp`'s `.rar`) and
@@ -179,6 +182,13 @@ honest refusal handling, as-is encrypted bytes.
    one-time consent to fetch the AssetRipper engine into `.work/third-party`
    (GPL-3.0, never committed); progress is streamed into the same log, and
    **Cancel** stops the conversion (killing the converter tree cleanly).
+7. View the result inside the GUI: **Converted models** lists the selected
+   world's GLBs (freshly converted plus past conversions under
+   `converted\scene\` and `converted\meshes\`), and **Open 3D viewer** opens
+   an in-app three.js window (WebView2) with a WASD + Space fly camera:
+   click to grab the mouse, `WASD` move, `Space` up, `C` down, `Shift` fast,
+   `R` reset, `Esc` release the mouse. The viewer page loads three.js (MIT)
+   from a CDN, so the very first open needs internet.
 
 Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
 --auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
@@ -307,9 +317,11 @@ Output lands in `output\<map name or worldId>\converted\`:
 | `manifest-<name>.json` | source/output `sha256` + sizes + limits disclosure |
 | `README.txt` | personal-use + limits notice |
 
-- **three.js**: open `tools/threejs-viewer/index.html` in a browser and drag &
-  drop the `.glb` (or `index.html?url=...` for a web-served file). It renders
-  with a CDN three.js import; first open needs internet.
+- **three.js**: inside the GUI via **Open 3D viewer** (the same page renders
+  it with fly controls in a WebView2 window), or open
+  `tools/threejs-viewer/index.html` in a browser and drag & drop the `.glb`
+  (or `index.html?url=...` for a web-served file). Both load three.js with a
+  CDN import; first open needs internet.
 - **Unity (6000.2)**: install a glTF importer (e.g. `glTFast`, available in
   the Unity Package Manager, or `UnityGLTF` from Khronos) and drag & drop the
   `.glb` into the Project window - imported as standard meshes/materials.

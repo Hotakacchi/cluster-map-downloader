@@ -4,6 +4,10 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- MSB3277 is the known benign WindowsBase 4/5 conflict raised by the
+         WebView2 package's unused Wpf adapter assembly; WinForms apps never
+         load it. Demote to a message to keep the build warning-free. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
     <!-- Keeps the Windows target buildable on non-Windows CI runners too. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>enable</Nullable>
@@ -19,6 +23,18 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ClusterMapDownloader\ClusterMapDownloader.csproj" />
+  </ItemGroup>
+
+  <!-- In-app 3D viewer host (WebView2 Runtime itself is a Windows component). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+  </ItemGroup>
+
+  <!-- Static three.js viewer page for ViewerForm (served via a virtual host). -->
+  <ItemGroup>
+    <Content Include="viewer\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
