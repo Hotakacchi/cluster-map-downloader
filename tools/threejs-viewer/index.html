@@ -135,6 +135,9 @@ function fixMissingTextures(root) {
     const materials = Array.isArray(node.material) ? node.material : [node.material];
     for (const material of materials) {
       if (!material || !material.isMeshStandardMaterial) continue;
+      // Unity scenes ship mirrored (negative-scale) meshes; front-face
+      // culling renders those inside-out / black, so render both sides.
+      material.side = THREE.DoubleSide;
       for (const slot of MAP_SLOTS) {
         if (material[slot] && !material[slot].image) {
           material[slot] = null;

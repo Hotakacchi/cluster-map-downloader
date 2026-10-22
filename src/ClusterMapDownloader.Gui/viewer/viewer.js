@@ -67,6 +67,39 @@ scene.add(back);
 const grid = new THREE.GridHelper(200, 100, 0x2f353d, 0x22262c);
 scene.add(grid);
 
+const clayMaterial = new THREE.MeshStandardMaterial({
+  color: 0x9aa2a8, roughness: 0.85, side: THREE.DoubleSide,
+});
+
+function applyViewMode() {
+  if (!currentModel) { return; }
+  currentModel.traverse((node) => {
+    if (!node.isMesh) { return; }
+    const materials = Array.isArray(node.material) ? node.material.filter(Boolean)
+      : (node.material ? [node.material] : []);
+    for (const material of materials) {
+      if (clayMode) {
+        if (!savedMaps.has(material)) {
+          const saved = {};
+          for (const slot of mapSlots) {
+            saved[slot] = material[slot];
+            material[slot] = null;
+          }
+          savedMaps.set(material, saved);
+        }
+      } else {
+        const saved = savedMaps.get(material);
+        if (saved) {
+          for (const slot of mapSlots) { material[slot] = saved[slot]; }
+          savedMaps.delete(material);
+        }
+      }
+      material.wireframe = wireMode;
+      material.needsUpdate = true;
+    }
+  });
+}
+
 // ---- fly state -------------------------------------------------------------
 const keys = new Set();
 let fast = false;
@@ -75,6 +108,11 @@ let pitch = -0.15;
 let velocity = new THREE.Vector3();
 const speedBase = { value: 3.0 };
 let lastSize = null;
+let currentModel = null;
+let clayMode = false;
+let wireMode = false;
+const savedMaps = new Map();
+const mapSlots = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap'];
 
 function resetPose(size) {
   lastSize = size || lastSize;
@@ -86,6 +124,9 @@ function resetPose(size) {
   yaw = Math.atan2(camera.position.x, camera.position.z); // face the center
   pitch = -0.35;
   velocity.set(0, 0, 0);
+  camera.near = Math.max(fit / 500, 0.02);
+  camera.far = Math.max(fit * 60, 200);
+  camera.updateProjectionMatrix();
   camera.rotation.set(pitch, yaw, 0);
 }
 
@@ -112,6 +153,9 @@ document.addEventListener('keydown', (event) => {
   if (event.code === 'Space') { event.preventDefault(); }
   if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') { fast = true; }
   if (event.code === 'KeyR') { resetPose(null); }
+  if (event.code === 'KeyG') { grid.visible = !grid.visible; }
+  if (event.code === 'KeyT') { clayMode = !clayMode; applyViewMode(); }
+  if (event.code === 'KeyX') { wireMode = !wireMode; applyViewMode(); }
   keys.add(event.code);
 });
 document.addEventListener('keyup', (event) => {
@@ -167,23 +211,47 @@ async function loadModel() {
   new GLTFLoader().load(modelUrl, (gltf) => {
     const model = gltf.scene;
     model.updateMatrixWorld(true);
+    currentModel = model;
+    savedMaps.clear();
 
     let vertices = 0;
     let meshCount = 0;
+    let fixedSlots = 0;
     const materials = new Set();
     model.traverse((node) => {
-      if (node.isMesh) {
-        meshCount += 1;
-        const position = node.geometry && node.geometry.attributes && node.geometry.attributes.position;
-        vertices += position ? position.count : 0;
-        if (Array.isArray(node.material)) { node.material.forEach((m) => materials.add(m)); }
-        else if (node.material) { materials.add(node.material); }
+      if (!node.isMesh) { return; }
+      meshCount += 1;
+      const position = node.geometry && node.geometry.attributes && node.geometry.attributes.position;
+      vertices += position ? position.count : 0;
+      const nodeMaterials = Array.isArray(node.material) ? node.material.filter(Boolean)
+        : (node.material ? [node.material] : []);
+      if (nodeMaterials.length === 0) {
+        node.material = clayMaterial;
+      }
+      for (const material of nodeMaterials) {
+        materials.add(material);
+        // Unity scenes frequently contain mirrored (negative-scale) meshes:
+        // with front-face culling they render inside-out / black. DoubleSide
+        // is the pragmatic generic-model-data fix.
+        material.side = THREE.DoubleSide;
+        for (const slot of mapSlots) {
+          const texture = material[slot];
+          // Degraded texture slots would render as black holes; drop them so
+          // the geometry stays visible (same handling as the browser viewer).
+          if (texture && !texture.image) {
+            material[slot] = null;
+            material.needsUpdate = true;
+            fixedSlots += 1;
+          }
+        }
       }
     });
+    applyViewMode();
 
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
+    grid.visible = false; // off by default: avoids the checker overlay on terrain
     grid.position.y = box.min.y - Math.max(size.y * 0.002, 0.002);
     model.position.sub(center);
     scene.add(model);
@@ -193,9 +261,11 @@ async function loadModel() {
     infoBox.textContent =
       displayName + ' | ' + formatBytes(sizeBytes) +
       ' | ' + meshCount + ' meshes | ' + vertices.toLocaleString('en-US') + ' vertices' +
-      ' | ' + materials.size + ' materials | personal use only';
+      ' | ' + materials.size + ' materials' +
+      (fixedSlots ? ' | ' + fixedSlots + ' degraded texture slot(s) neutralized' : '') +
+      ' | personal use only';
     postReport('loaded', 'loaded: ' + displayName + ' (' + formatBytes(sizeBytes) + ', ' +
-      meshCount + ' meshes)');
+      meshCount + ' meshes' + (fixedSlots ? ', ' + fixedSlots + ' broken texture slot(s) neutralized' : '') + ')');
   }, (event) => {
     if (event.total) {
       const pct = Math.round(100 * event.loaded / event.total);
