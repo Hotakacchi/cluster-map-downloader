@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cluster-map-downloader - GLB viewer (personal use)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #10141a;
+               font-family: Consolas, Menlo, monospace; color: #cfd8dc; }
+  #app { position: absolute; inset: 0; }
+  canvas { display: block; }
+  #hud { position: absolute; top: 10px; left: 12px; right: 12px;
+         display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
+  #status { font-size: 13px; }
+  #stats { font-size: 12px; color: #8fa3ad; }
+  #hint { position: absolute; left: 12px; bottom: 34px; font-size: 12px;
+          color: #8fa3ad; max-width: 90ch; }
+  #footer { position: absolute; left: 12px; right: 12px; bottom: 10px; font-size: 11px;
+            color: #6f7d86; }
+  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+          background: rgba(16, 20, 26, .82); font-size: 18px; z-index: 10; }
+  a { color: #7fb3ff; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud">
+  <span id="status">Open a .glb or drag &amp; drop it here.</span>
+  <span id="stats"></span>
+</div>
+<div id="hint">
+  Get a GLB: <code>pwsh scripts\convert-bundle.ps1 -Bundle &lt;path-to-.win&gt; -FetchTool</code>
+  &nbsp;|&nbsp; Load by URL: <code>index.html?url=scene.glb</code> (needs a web-served file,
+  e.g. <code>python -m http.server</code>; a double-clicked local page cannot fetch local files).
+  The viewer fetches three.js from a CDN once, so it needs internet the first time.
+</div>
+<div id="footer">
+  Personal use only. The 3D data was converted from a cluster world bundle;
+  its copyright belongs to the world creators - do not redistribute.
+</div>
+<div id="drop">Drop the .glb to load it</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const statusEl = document.getElementById('status');
+const statsEl = document.getElementById('stats');
+const appEl = document.getElementById('app');
+const dropEl = document.getElementById('drop');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+appEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445058, 2.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-30, 60, 40);
+scene.add(sun);
+const grid = new THREE.GridHelper(400, 80, 0x3a4652, 0x222b34);
+grid.visible = false;
+scene.add(grid);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 4000);
+camera.position.set(20, 14, 20);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+function setStatus(text, isError) {
+  statusEl.textContent = text;
+  statusEl.style.color = isError ? '#ff7b72' : '#cfd8dc';
+}
+
+function frame(root) {
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) {
+    setStatus('The GLB loaded but contains no visible geometry.', true);
+    return;
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z) * 0.5;
+  const distance = (radius || 5) / Math.tan((camera.fov * Math.PI / 180) / 2) * 1.4;
+  camera.near = Math.max(radius / 500, 0.02);
+  camera.far = Math.max(radius * 50, 100);
+  camera.updateProjectionMatrix();
+  camera.position.copy(center).add(new THREE.Vector3(distance * 0.7, distance * 0.6, distance * 0.7));
+  controls.target.copy(center);
+  controls.update();
+  grid.visible = true;
+  grid.scale.setScalar(Math.max(radius, 1));
+  grid.position.copy(center);
+}
+
+function disposeCurrent() {
+  if (!currentRoot) return;
+  scene.remove(currentRoot);
+  currentRoot.traverse((node) => {
+    if (node.isMesh) {
+      node.geometry.dispose();
+      if (Array.isArray(node.material)) node.material.forEach((m) => m && m.dispose());
+      else if (node.material) node.material.dispose();
+    }
+  });
+  currentRoot = null;
+}
+
+let currentRoot = null;
+const grey = new THREE.MeshStandardMaterial({ color: 0x9aa2a8, roughness: 0.85 });
+const MAP_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap'];
+
+function fixMissingTextures(root) {
+  // Degraded texture slots (missing image bytes) would render black/magenta
+  // holes; replace them so geometry still shows up honestly.
+  let fixed = 0;
+  root.traverse((node) => {
+    if (!node.isMesh) return;
+    if (!node.material) {
+      node.material = grey;
+      fixed++;
+      return;
+    }
+    const materials = Array.isArray(node.material) ? node.material : [node.material];
+    for (const material of materials) {
+      if (!material || !material.isMeshStandardMaterial) continue;
+      for (const slot of MAP_SLOTS) {
+        if (material[slot] && !material[slot].image) {
+          material[slot] = null;
+          material.needsUpdate = true;
+          fixed++;
+        }
+      }
+    }
+  });
+  return fixed;
+}
+
+function showStats(root) {
+  let meshes = 0;
+  const materials = new Set();
+  let triangles = 0;
+  root.traverse((node) => {
+    if (!node.isMesh) return;
+    meshes++;
+    const geometry = node.geometry;
+    if (Array.isArray(node.material)) node.material.forEach((m) => m && materials.add(m));
+    else if (node.material) materials.add(node.material);
+    triangles += geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+  });
+  statsEl.textContent = meshes + ' meshes | ' + materials.size + ' materials | ' +
+    Math.round(triangles).toLocaleString('en-US') + ' triangles';
+}
+
+const loader = new GLTFLoader();
+
+function loadFromUrl(url, label) {
+  setStatus('Loading ' + label + ' ...');
+  loader.load(url, (gltf) => {
+    disposeCurrent();
+    const fixed = fixMissingTextures(gltf.scene);
+    currentRoot = gltf.scene;
+    scene.add(currentRoot);
+    showStats(currentRoot);
+    frame(currentRoot);
+    setStatus('Loaded ' + label + (fixed ? ' (replaced ' + fixed + ' broken texture slot(s))' : ''));
+  }, (event) => {
+    if (event.lengthComputable) {
+      setStatus('Loading ' + label + ' ... ' + Math.round(100 * event.loaded / event.total) + '%');
+    }
+  }, (error) => {
+    console.error(error);
+    setStatus('Failed to load ' + label + ' - see the browser console for details.', true);
+  });
+}
+
+function loadFile(file) {
+  if (!file) {
+    setStatus('Nothing to load.', true);
+    return;
+  }
+  if (!/\.glb$/i.test(file.name) && !/^model\/gltf-binary$/.test(file.type)) {
+    setStatus('Not a .glb file: ' + file.name, true);
+    return;
+  }
+  disposeCurrent();
+  loadFromUrl(URL.createObjectURL(file), file.name);
+}
+
+// Drag & drop
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; dropEl.style.display = 'flex'; });
+window.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; dropEl.style.display = 'none'; }
+});
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropEl.style.display = 'none';
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  loadFile(file);
+});
+
+// Optional ?url= support (works with any CORS-enabled URL)
+const requestedUrl = new URLSearchParams(location.search).get('url');
+if (requestedUrl) {
+  loadFromUrl(requestedUrl, requestedUrl.split('/').pop());
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

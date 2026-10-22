@@ -78,6 +78,12 @@ It does **not** fake a completed download.
   honestly (no circumvention).
 - Reusable PowerShell bootstrap / installer-extraction / binary-analysis
   scripts for the research workflow.
+- Bundle → GLB conversion (`scripts/convert-bundle.ps1`): turns a
+  `unityfs-plain` bundle into a single glTF 2.0 model (scene hierarchy,
+  meshes, materials, embedded textures) loadable in three.js / Unity /
+  Blender - driven headlessly through AssetRipper's local WebUI, with the
+  tool fetched at runtime (`-FetchTool`, never vendored) and encrypted files
+  honestly skipped (see README section 7; output is personal-use only).
 - `ifpsdasm-wrapper`, a small .NET 8 tool that turns the Cluster installer's
   `CompiledCode.bin` (Inno Setup PascalScript bytecode) into readable
   disassembly.
@@ -261,6 +267,50 @@ pwsh .\scripts\bootstrap.ps1 -WithTools -WithAnalysisTools
 All of these download only research artifacts into `downloads/` / `.work/`
 (git-ignored). CI never runs them.
 
+### 7. Convert a downloaded bundle to GLB (three.js / Unity / Blender) - personal use
+
+A downloaded `unityfs-plain` bundle can be turned into portable glTF 2.0
+(`GLB`) model data via AssetRipper (GPL-3.0 open source), which is fetched at
+runtime into `.work/third-party/` (git-ignored, never vendored) only when you
+explicitly pass `-FetchTool`:
+
+```powershell
+pwsh .\scripts\convert-bundle.ps1 \
+    -Bundle "output\<worldId>\bundles\<name>.win" -FetchTool
+# later runs reuse the already-fetched tool (no -FetchTool needed):
+pwsh .\scripts\convert-bundle.ps1 -Bundle "output\<worldId>\bundles\<name>.win"
+# extra data (optional): -Textures (decoded PNGs), -All (complete raw export)
+```
+
+Output lands in `output\<worldId>\converted\`:
+
+| File | What it is |
+|---|---|
+| `scene\<name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures |
+| `textures\` | decoded PNG textures (with `-Textures`) |
+| `full-export\` | the complete raw AssetRipper export (with `-All`) |
+| `manifest-<name>.json` | source/output `sha256` + sizes + limits disclosure |
+| `README.txt` | personal-use + limits notice |
+
+- **three.js**: open `tools/threejs-viewer/index.html` in a browser and drag &
+  drop the `.glb` (or `index.html?url=...` for a web-served file). It renders
+  with a CDN three.js import; first open needs internet.
+- **Unity (6000.2)**: install a glTF importer (e.g. `glTFast`, available in
+  the Unity Package Manager, or `UnityGLTF` from Khronos) and drag & drop the
+  `.glb` into the Project window - imported as standard meshes/materials.
+- **Blender**: `File > Import > glTF 2.0` works out of the box.
+
+Honest limits: the conversion is generic 3D model data only - meshes,
+materials, textures and node transforms. cluster-specific components
+(gimmicks, spawn logic, scripts), source shaders and lighting behavior do not
+come across (shaders become placeholder standard materials). Encrypted
+bundles are never decrypted: the script magic-checks `UnityFS\0` first and
+skips anything else honestly (exit code 2).
+
+The converted data is **personal use only** - the 3D content's copyright
+belongs to the world creators; do not redistribute or reuse it. Converted
+files live under the git-ignored `output/` directory and are never committed.
+
 ## Research / implementation status
 
 Full narrative: [`docs/RESEARCH.md`](docs/RESEARCH.md); endpoints and probe
@@ -335,7 +385,9 @@ Boundary decision narrative + the opt-in guest-entry mode:
   project.
 - World/AssetBundle content is copyrighted by its creators and belongs to
   them. Downloaded files stay on your machine; do not redistribute them
-  unless you have the right to do so.
+  unless you have the right to do so. The same applies (and is repeatedly
+  disclosed by the tooling) to **converted models** (GLB/textures): they are
+  for personal study/viewing only, local-only, and never committed.
 - Use the tool politely and lawfully: respect Cluster's Terms of Service,
   robots/rate limits, and server capacity. The project fetches only
   publicly accessible data and avoids unnecessary endpoint traffic.

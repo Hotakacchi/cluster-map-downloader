@@ -371,3 +371,106 @@ requests, no endpoint guessing, no credential use). Nevertheless: users are
 responsible for complying with cluster's Terms of Service at the time they
 run the tool, for respecting world creators' rights over their content
 (see [NOTICE.md](../NOTICE.md)), and for keeping downloads personal.
+
+## 9. Converting downloaded bundles into portable 3D (GLB)
+
+**Status: researched + implemented + verified end-to-end on a real world
+bundle (October 2026).** Delivered by `scripts/convert-bundle.ps1`
+(opt-in `--FetchTool` fetch of AssetRipper) and viewable with
+`tools/threejs-viewer/index.html`. README section 7 is the user-facing how-to.
+
+### 9.1 Route selection
+
+The requirement for this direction is modest on purpose: **generic model
+data only** (node hierarchy, meshes, materials, textures) in **one standard
+format** that three.js, Unity, and Blender can all read — that format is
+glTF 2.0 / GLB. World recreation (cluster's own components, gimmicks,
+scripting behavior) is explicitly out of scope.
+
+| Option considered | Verdict |
+|---|---|
+| Self-implemented UnityFS → glTF converter | Rejected: mesh vertex-stream decoding, Crunch/DXT/ASTC texture decoding, and serialized type-tree work is a months-scale effort that must chase every Unity version |
+| AssetStudio forks | Rejected: archived upstream; uneven Unity 6 support; uploads need external tooling anyway |
+| **AssetRipper (GPL-3.0, active)** | **Chosen**: reads Unity 3.5.0–6000.4.X (covers cluster's 6000.2.6f2 + UnityFS bundle version 8), ships a ready GLB exporter (SharpGLTF), runtime-fetch-friendly |
+| Unity-native roundtrip (load bundle in Unity 6000.2 + UnityGLTF export) | Documented as the fallback when a heavier fidelity path is ever needed; not automated (requires an installed Unity editor of the right version) |
+
+### 9.2 AssetRipper 2.0.0 facts (verified from the release binary + source)
+
+- License: **GPL-3.0-or-later** (`LICENSE.md`). Runtime-fetched only, pinned
+  to `2.0.0` by default (`-RipperVersion`), lands in
+  `.work/third-party/assetripper/`, never vendored, `NOTICE.md` row.
+- Assembly: `AssetRipper_win_x64.zip` (42.4 MB) → self-contained
+  `AssetRipper.GUI.Free.exe` (+ `capstone.dll`). **No console binary** in the
+  free edition; the GUI binary is instead a **local WebUI server**.
+- Headless usage: `AssetRipper.GUI.Free.exe --headless --port <port>
+  --log-path <log>`; browser is not opened in headless mode.
+- WebUI API surfaced by `Source/AssetRipper.GUI.Web/WebApplicationLauncher.cs`:
+  - `POST /LoadFile` — form field `Path=<absolute path>`. **Synchronous**:
+    the 302 response returns only after the bundle is fully loaded +
+    processed (`GameFileLoader.LoadAndProcess`).
+  - `POST /Export/PrimaryContent` — form field `Path=<target dir>`;
+    headless mode auto-consents to deleting a pre-existing non-empty dir
+    (`GameFileLoader.UserConsentsToDeletion`), so the script uses a fresh
+    unique directory.
+  - `POST /LoadFolder`, `POST /Export/UnityProject`, `GET
+    /Assets/Model.glb?Path=<assetPath json>` (per-mesh GLB endpoint),
+    OpenAPI doc at `/openapi`. `POST /Reset` between bundles.
+- Scene → GLB path in source: `PrimaryContentExporter.RegisterDefaultHandlers`
+  registers `GlbModelExporter` for GameObjects/components/scene hierarchy
+  objects → `GlbSceneModelExportCollection` →
+  `AssetRipper.Export.Modules.Models.GlbLevelBuilder` (walks the GameObject
+  hierarchy, converts Unity left-handed Y-up transforms to glTF right-handed
+  Y-up, embeds textures, builds standard materials via SharpGLTF).
+- The premium edition gates other features; **GLB primary-content export is
+  free-source functionality** (no premium behavior was used or licensed).
+
+### 9.3 Live verification (the 118 MB c59fd20a world)
+
+Command: `pwsh scripts/convert-bundle.ps1 -Bundle
+output\c59fd20a-85b9-45ad-a357-4fdece9c180b\bundles\mainScene-00-vf_6be1c4fe0750a430ae5bae84fb.win`
+
+- Source: `unityfs-plain`, 118,100,853 bytes,
+  `sha256 144b513d929b…` (matches the download manifest; magic gate first).
+- Load: one synchronous WebUI call, minutes-scale, memory peak ≈ 1.1 GB.
+- Raw export: 556 files / 178.7 MB:
+  - `Assets\SceneHierarchyObject\venue_7b06e33a0b3cec1e5fcaf5b028.glb`
+    **63.5 MB — the whole world scene** (the deliverable copied to
+    `output\…\converted\scene\`),
+  - `Assets\Mesh\*.glb` (226 per-mesh GLBs, 1.2 MB total),
+  - `Assets\Texture2D\*` 86 PNGs / 64 MB (copied separately only with
+    `-Textures`), `Assets\Cubemap\` 18.2 MB, fonts, 7 ogg audio clips,
+    ~240 JSON asset dumps, placeholder shader text dumps.
+  - Tool process is always killed by the script (`finally`); the raw export
+    stays in `.work/assetripper-export/` (git-ignored, deletable at will).
+- Delivered GLB validated byte-level: magic `glTF`, version 2, JSON chunk
+  285,032 bytes → **235 meshes, 82 materials, 75 embedded images/textures,
+  592 nodes, 12 scene roots**, accessors carry min/max bounds, **no
+  extensions required** (max portability).
+- three.js `GLTFLoader` renders it (viewer); Unity/Blender accept it as a
+  standard glTF import.
+
+### 9.4 Honest limits
+
+- Converted content is **generic 3D model data** only: cluster-specific
+  components (gimmicks, cluster-format colliders, spawn/anchor logic),
+  scripts, analytics, and playback behavior do not exist in the GLB.
+- Source shaders export as placeholder standard materials (GLB embeds the
+  material values and textures, not cluster's shading code); lighting
+  setups (cubemaps, lightmaps) are separate assets and not baked in.
+- One bundle per run (single-world/singles-file policy like the downloader);
+  multiple bundles = run the script per bundle.
+- Some venue bundles are AES-encrypted client-side: the script checks the
+  `UnityFS\0` magic first and exits honestly (code 2) otherwise — encrypted
+  bytes are never decrypted by this project (unchanged §0 ground rule).
+- Runtime cost roughly scales with bundle size (large worlds: minutes,
+  ~1 GB RAM); both WebUI calls honor `-TimeoutMinutes` (default 30).
+
+### 9.5 Policy anchors (same rules as §6/§8)
+
+| Rule | Implementation |
+|---|---|
+| Tools never vendored | AssetRipper fetched only via `-FetchTool`, stored in git-ignored `.work/third-party/`, recorded in `NOTICE.md` |
+| Outputs never committed | All conversion artifacts under git-ignored `output/<worldId>/converted/` |
+| No decryption, ever | Leading-magic gate `UnityFS\0`; anything else → honest skip (exit 2), header bytes printed for the record |
+| Personal-use disclosure | Banner printed by the script, `converted/README.txt`, `converted/manifest-*.json.disclaimer` field, viewer footer, README/NOTICE sections |
+| Provenance | `manifest-*.json` records source bundle name/fileFormat/sha256, tool name/version/license/mode, per-output sha256/bytes, and the limits bullet list |

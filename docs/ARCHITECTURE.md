@@ -40,6 +40,8 @@ redistributable and honest. Companion reading:
 | `src/ClusterMapDownloader.Gui` | WinForms paste-a-URL GUI (`cluster-map-downloader-gui.exe`) — the same pipeline plus per-file/byte progress; always runs the guest-entry flow with compact, user-facing messages | net8.0-windows; `EnableWindowsTargeting` keeps it buildable on non-Windows CI |
 | `tests/ClusterMapDownloader.Tests` | xUnit suite (69 tests), all synthetic (no copyrighted world data, no real keys) | see "Testing", §6 |
 | `tools/ifpsdasm-wrapper` | net8.0 front-end for IFPSLib; turns the installer's `CompiledCode.bin` into readable disassembly | NOT part of the main solution — needs `.work/third-party/IFPSTools.NET` (bootstrap-fetched) |
+| `scripts/convert-bundle.ps1` | Converts a downloaded `unityfs-plain` bundle into a single glTF 2.0 scene model (GLB: hierarchy + meshes + materials + embedded textures) for three.js/Unity/Blender | drives AssetRipper (GPL-3.0, pinned runtime fetch into `.work/third-party`, never vendored) headlessly over its local WebUI API; magic-checks `UnityFS\0` first and skips encrypted files honestly (exit 2); all deliverables under git-ignored `output/<worldId>/converted/` |
+| `tools/threejs-viewer/index.html` | Single-file GLB viewer (three.js `GLTFLoader` + `OrbitControls` via CDN importmap; drag & drop or `?url=`) | pure tracked code; needs internet once for the CDN importmap; footer discloses personal-use-only |
 | `scripts/` | PowerShell research helpers (see §4) | all outputs into git-ignored dirs |
 
 ## 3. Library surface (`ClusterMapDownloader`)
@@ -122,6 +124,7 @@ import from `scripts/lib/ClusterMapDownloaderSupport.psm1`.
 |---|---|
 | `bootstrap.ps1` | dotnet SDK check, build, publish CLI (`artifacts-local/cli`), opt-in tools fetch (`-WithTools`: innounp + IFPSTools.NET + wrapper build; `-WithAnalysisTools`: Il2CppDumper), `-RunTests` |
 | `download-world.ps1` | main entry point: ensures the CLI is published, maps parameters to CLI args (`-GuestEntry` opt-in, key never echoed when printing the command line), mirrors exit code, guarantees the not-implemented message on 2 |
+| `convert-bundle.ps1` | bundle → GLB conversion (see RESEARCH.md §9, README §7): UnityFS magic gate, opt-in `-FetchTool` runtime fetch of AssetRipper, headless WebUI drive (LoadFile → Export/PrimaryContent), deliverables copied under `output/<worldId>/converted/` with sha256 manifest + personal-use notices; encrypted files skipped honestly (exit 2) |
 | `extract-installer.ps1` | innounp extraction of the user's installer; `-Disassemble` (PascalScript bytecode); `-DownloadClientPackage` (the anonymous `update.cluster.mu` 7z fetch documented in RESEARCH.md); `-ExtractClientPackage` (7-Zip → `.work/client-package`) |
 | `analyze-client.ps1` | file inventory, optional `-Il2CppDump` (Il2CppDumper), chunked binary pattern scans and text scans (`dump.cs`, `stringliteral.json`, `catalog.json`), all masked, into `.work/analysis/client-analysis-report.md` |
 | `check-repo-policy.ps1` | repo-policy verification: tracked-file rules, `secret-shape` pattern scan, `.gitignore` coverage |
@@ -201,7 +204,7 @@ must:
 
 | Directory | Contents |
 |---|---|
-| `.work/third-party/` | fetched tools: `innounp/`, `Il2CppDumper/`, `IFPSTools.NET/` (cloned + patched) |
+| `.work/third-party/` | fetched tools: `innounp/`, `Il2CppDumper/`, `IFPSTools.NET/` (cloned + patched), `assetripper/` (+ its `logs/`; fetched only by `convert-bundle.ps1 -FetchTool`) |
 | `.work/installer/` | innounp extraction of a user installer (`{app}`, `embedded`, `install_script.iss`) |
 | `.work/client-package/` | 7-Zip extraction of `cluster_win.7z` (Unity client) |
 | `.work/il2cpp-dump/` | Il2CppDumper output (`dump.cs`, `stringliteral.json`, `il2cpp.h`, `DummyDll/`) |

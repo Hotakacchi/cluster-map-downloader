@@ -26,6 +26,7 @@ remain in ignored working directories:
 | [7-Zip](https://www.7-zip.org/) | LGPL + unRAR restrictions (external executable, not fetched) | user-installed | Extracting `cluster_win.7z` client packages and opening `innounp` archives |
 | [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL) | MIT | GitHub releases (optional, fetched manually) | Alternative IL2CPP assembly analysis |
 | [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) v6.7.46 | MIT | GitHub releases (`Il2CppDumper-net6` zip; fetched by `-WithAnalysisTools`) | Dumping IL2CPP class/method surface from `GameAssembly.dll` + `global-metadata.dat` (`dotnet <dir>/Il2CppDumper.dll …`) |
+| [AssetRipper](https://github.com/AssetRipper/AssetRipper) 2.0.0 (Free edition) | GNU GPL-3.0-or-later | GitHub releases zip (`AssetRipper_win_x64.zip`; fetched locally at runtime by `scripts/convert-bundle.ps1 -FetchTool` only) | Converting downloaded `unityfs-plain` world bundles into glTF 2.0 (GLB) scene models via its headless local WebUI (`POST /LoadFile` → `POST /Export/PrimaryContent`) |
 
 If you reproduce the maintainers' documentation, keep the attributions above.
 Do not commit any of these tools' binaries, their source, or any files they
@@ -48,6 +49,13 @@ generate from proprietary data to this repository.
 - Some venue AssetBundles are AES-encrypted by the game client
   (`AesAssetDecryptor`). This tool saves those bytes as-is and implements
   no decryption or key extraction.
+- Bundle conversion (`scripts/convert-bundle.ps1`) produces **generic model
+  data only** (meshes/materials/textures/transforms) and always magic-checks
+  for plain UnityFS first: encrypted or unrecognized files are skipped
+  honestly, never decrypted. Converted GLB/textures are personal-use,
+  local-only (`output\` is git-ignored), and repeated disclosures in the
+  tool, viewer, and docs remind users that the 3D content's copyright stays
+  with the world creators.
 - World/AssetBundle content is copyrighted by its creators. Respect the
   [cluster Terms of Service](https://cluster.mu/terms) and applicable law;
   what you do with downloaded content is your responsibility.
