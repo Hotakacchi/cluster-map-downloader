@@ -167,6 +167,27 @@ function Test-UnityFsPlain {
     finally { $stream.Dispose() }
 }
 
+function Get-MetadataMapName {
+    <#Public map name from the world dir's world-metadata.json (or $null).#>
+    param([string]$MetaPath)
+    if (-not (Test-Path -LiteralPath $MetaPath -PathType Leaf)) { return $null }
+    try {
+        $snapshot = Get-Content -LiteralPath $MetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch { return $null }
+    $raw = $null
+    if ($snapshot.metadata -and $snapshot.metadata.PSObject.Properties['name']) {
+        $raw = $snapshot.metadata.name
+    }
+    if (-not $raw -and $snapshot.PSObject.Properties['name']) { $raw = $snapshot.name }
+    if (-not $raw) { return $null }
+    $name = ($raw -replace '[\\/:*?"<>|]', '_')
+    $name = ($name -replace '[\x00-\x1F]', '').Trim()
+    if ($name.Length -gt 80) { $name = $name.Substring(0, 80) }
+    $name = $name.TrimEnd('.', ' ')
+    if ($name) { return $name } else { return $null }
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -198,7 +219,7 @@ try {
     }
 
     # --- 2. output location ------------------------------------------------
-    # <...>\<worldId>\bundles\<file>.win  ->  <...>\<worldId>\converted\
+    # <...>\<map name or worldId>\bundles\<file>.win -> <...>\converted\
     $_bundleDir = Split-Path -Parent $bundleFullPath
     if ($OutputDir) {
         $convertedRoot = (New-Item -ItemType Directory -Force -Path $OutputDir).FullName
@@ -321,8 +342,13 @@ try {
     }
 
     $outputs = @()
+    $mapName = Get-MetadataMapName -MetaPath (Join-Path (Split-Path -Parent $_bundleDir) 'world-metadata.json')
+    if ($mapName) {
+        Write-StepOk ("Map name from metadata: {0} (scene GLB will use it)." -f $mapName)
+    }
     foreach ($sceneGlb in $sceneGlbs) {
-        $destination = Get-UniqueDestination -Path (Join-Path $sceneOut $sceneGlb.Name)
+        $sceneBaseName = if ($mapName) { "{0}.glb" -f $mapName } else { $sceneGlb.Name }
+        $destination = Get-UniqueDestination -Path (Join-Path $sceneOut $sceneBaseName)
         Copy-Item -LiteralPath $sceneGlb.FullName -Destination $destination
         $outputs += [pscustomobject]@{
             role      = 'scene-glb'
@@ -359,6 +385,7 @@ try {
             fileFormat = 'unityfs-plain'
             bytes      = (Get-Item -LiteralPath $bundleFullPath).Length
             sha256     = Get-Sha256LowerHex -Path $bundleFullPath
+            mapName    = $mapName
         }
         tool        = [pscustomobject]@{
             name    = 'AssetRipper'

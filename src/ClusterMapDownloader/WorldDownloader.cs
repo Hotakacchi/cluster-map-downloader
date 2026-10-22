@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -68,12 +69,6 @@ public static class WorldDownloader
 
         notifier.Success($"Parsed world id: {worldUrl.WorldId} ({worldUrl.CanonicalUrl})");
 
-        var worldDir = Path.Combine(options.OutputDirectory, worldUrl.WorldId);
-        if (!options.DryRun)
-        {
-            Directory.CreateDirectory(worldDir);
-        }
-
         // ---- Stage 2: fetch public metadata -------------------------------
         notifier.Info($"[2/6] Fetching public world metadata from {DescribeMetadataEndpoint(options)} ...");
         WorldMetadata metadata;
@@ -89,6 +84,18 @@ public static class WorldDownloader
         }
 
         notifier.Success($"Fetched metadata for '{metadata.Name ?? metadata.Id ?? "?"}'.");
+
+        // ---- Stage 2.5: resolve the world folder --------------------------
+        // Directory name = the public map name when the API provides a usable
+        // one (sanitized; falls back to the world id so unknown/blank names
+        // behave exactly as before). Collisions with another world's folder
+        // are disambiguated with a short world-id suffix, then numbers.
+        var worldDir = Path.Combine(options.OutputDirectory,
+            ResolveWorldDirectoryName(options.OutputDirectory, metadata, worldUrl.WorldId));
+        if (!options.DryRun)
+        {
+            Directory.CreateDirectory(worldDir);
+        }
 
         // ---- Stage 3: report metadata & resolve venue id -------------------
         notifier.Info("[3/6] World metadata & venue resolution ...");
@@ -383,9 +390,110 @@ public static class WorldDownloader
         public IReadOnlyList<DownloadedFile> Files { get; init; } = Array.Empty<DownloadedFile>();
     }
 
-    private static void WriteJson<T>(string path, T value, IProgressNotifier notifier)
+    /// <summary>
+    /// On-disk world directory name: the public map name (sanitized) when the
+    /// API provides a usable one, the raw world id otherwise (unchanged legacy
+    /// behavior for name-less metadata). A folder that already exists for a
+    /// DIFFERENT world gets a short world-id suffix, then a number.
+    /// </summary>
+    public static string ResolveWorldDirectoryName(
+        string outputRoot,
+        WorldMetadata? metadata,
+        string worldId)
+    {
+        var name = SanitizeDirectoryComponent(metadata?.Name);
+        if (string.IsNullOrEmpty(name) ||
+            string.Equals(name, worldId, StringComparison.OrdinalIgnoreCase))
+        {
+            return worldId;
+        }
+
+        var candidateDir = Path.Combine(outputRoot, name);
+        if (!Directory.Exists(candidateDir))
+        {
+            return name;
+        }
+
+        // Re-download of the same world: reuse its existing folder.
+        if (SnapshotDeclaresWorldId(candidateDir, worldId))
+        {
+            return name;
+        }
+
+        var shortId = worldId.Length > 8 ? worldId[..8] : worldId;
+        var withId = $"{name} ({shortId})";
+        if (!Directory.Exists(Path.Combine(outputRoot, withId)))
+        {
+            return withId;
+        }
+
+        for (var i = 2; i < 1000; i++)
+        {
+            var numbered = $"{name} ({i})";
+            if (!Directory.Exists(Path.Combine(outputRoot, numbered)))
+            {
+                return numbered;
+            }
+        }
+
+        return withId;
+    }
+
+    private static string SanitizeDirectoryComponent(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var builder = new StringBuilder();
+        foreach (var ch in raw.Trim())
+        {
+            if (char.IsControl(ch))
+            {
+                continue;
+            }
+
+            builder.Append(Array.IndexOf(invalid, ch) >= 0 ? '_' : ch);
+        }
+
+        var text = builder.ToString().TrimEnd(' ', '.');
+        if (text.Length > 80)
+        {
+            text = text[..80];
+        }
+
+        return text;
+    }
+
+    private static bool SnapshotDeclaresWorldId(string worldDir, string worldId)
     {
         try
+        {
+            var snapshotPath = Path.Combine(worldDir, "world-metadata.json");
+            if (!File.Exists(snapshotPath))
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(snapshotPath));
+            if (!document.RootElement.TryGetProperty("metadata", out var metadataElement))
+            {
+                return false;
+            }
+
+            return metadataElement.TryGetProperty("id", out var idElement) &&
+                   idElement.ValueEquals(worldId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void WriteJson<T>(string path, T value, IProgressNotifier notifier)
+    {        try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(value, ManifestJsonOptions));

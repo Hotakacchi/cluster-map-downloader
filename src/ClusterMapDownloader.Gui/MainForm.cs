@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using ClusterMapDownloader;
 using ClusterMapDownloader.GuestEntry;
 
@@ -22,11 +23,15 @@ public sealed class MainForm : Form
     private readonly Button cancelButton;
     private readonly Button openFolderButton;
     private readonly Button convertButton;
+    private readonly Button refreshPastButton;
+    private readonly ComboBox pastBox;
     private readonly ProgressBar progressBar;
     private readonly Label statusLabel;
     private readonly bool autoClose;
     private string? lastWorldDir;
     private readonly List<string> lastPlainBundles = new();
+    private readonly Dictionary<string, string> pastWorlds = new(StringComparer.OrdinalIgnoreCase);
+    private bool suppressPastSelection;
     private Process? convertProcess;
     private CancellationTokenSource? cts;
 
@@ -69,6 +74,9 @@ public sealed class MainForm : Form
             Enabled = false,
         };
         convertButton.Click += async (_, _) => await RunConversionAsync().ConfigureAwait(true);
+        refreshPastButton = new Button { Text = "Refresh", Dock = DockStyle.Fill };
+        refreshPastButton.Click += (_, _) => RefreshPastDownloads(null);
+        pastBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         openFolderButton.Click += (_, _) =>
         {
             if (lastWorldDir is { } dir && Directory.Exists(dir))
@@ -110,20 +118,21 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(10),
         };
-        // 0..5 auto rows (URL / path / buttons / bar / status / footer-ish), 6 is the log.
+        // 0..6 auto rows (URL / path / past / buttons / bar / status / footer-ish), 6 is the log, 7 footer.
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layoutRoot.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 0: URL
         layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 1: output dir
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 2: buttons
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 3: progress bar
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 4: status
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // row 5: log (fills)
-        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 6: footer note
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 2: past downloads
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 3: buttons
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 4: progress bar
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 5: status
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // row 6: log (fills)
+        layoutRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // row 7: footer note
 
         var urlLabel = new Label
         {
@@ -156,9 +165,22 @@ public sealed class MainForm : Form
             if (dialog.ShowDialog(this) == DialogResult.OK)
             {
                 outputBox.Text = dialog.SelectedPath;
+                RefreshPastDownloads(null);
             }
         };
         layoutRoot.Controls.Add(browse, 2, 1);
+
+        var pastLabel = new Label
+        {
+            Text = "Past downloads:",
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 6, 6, 0),
+        };
+        layoutRoot.Controls.Add(pastLabel, 0, 2);
+        layoutRoot.Controls.Add(pastBox, 1, 2);
+        layoutRoot.Controls.Add(refreshPastButton, 2, 2);
+        pastBox.SelectedIndexChanged += (_, _) => OnPastSelectionChanged();
+        outputBox.Leave += (_, _) => RefreshPastDownloads(null);
 
         var buttonRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Height = 40 };
         buttonRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
@@ -169,14 +191,14 @@ public sealed class MainForm : Form
         buttonRow.Controls.Add(cancelButton, 1, 0);
         buttonRow.Controls.Add(openFolderButton, 2, 0);
         buttonRow.Controls.Add(convertButton, 3, 0);
-        layoutRoot.Controls.Add(buttonRow, 0, 2);
+        layoutRoot.Controls.Add(buttonRow, 0, 3);
         layoutRoot.SetColumnSpan(buttonRow, 3);
 
-        layoutRoot.Controls.Add(progressBar, 0, 3);
+        layoutRoot.Controls.Add(progressBar, 0, 4);
         layoutRoot.SetColumnSpan(progressBar, 3);
-        layoutRoot.Controls.Add(statusLabel, 0, 4);
+        layoutRoot.Controls.Add(statusLabel, 0, 5);
         layoutRoot.SetColumnSpan(statusLabel, 3);
-        layoutRoot.Controls.Add(logBox, 0, 5);
+        layoutRoot.Controls.Add(logBox, 0, 6);
         layoutRoot.SetColumnSpan(logBox, 3);
 
         var footer = new Label
@@ -186,7 +208,7 @@ public sealed class MainForm : Form
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
         };
-        layoutRoot.Controls.Add(footer, 0, 6);
+        layoutRoot.Controls.Add(footer, 0, 7);
         layoutRoot.SetColumnSpan(footer, 3);
 
         Controls.Add(layoutRoot);
@@ -200,6 +222,8 @@ public sealed class MainForm : Form
             urlBox.Text = presetUrl;
             Shown += async (_, _) => await RunDownloadAsync().ConfigureAwait(true);
         }
+
+        Shown += (_, _) => RefreshPastDownloads(null);
 
         AcceptButton = downloadButton;
         FormClosing += (_, _) =>
@@ -307,10 +331,13 @@ public sealed class MainForm : Form
 
     private void OnRunFinished(WorldDownloadResult result)
     {
-        if (result.WorldId is { } worldId && worldId.Length > 0)
+        // The world directory name is the map name when available (Stage 2.5),
+        // so derive it from the files that were actually written instead of
+        // assuming "<output>/<worldId>".
+        var worldDirFromResult = ResolveGivenWorldDir(result);
+        if (worldDirFromResult is not null)
         {
-            lastWorldDir = Path.Combine(Path.GetFullPath(outputBox.Text), worldId);
-            openFolderButton.Enabled = Directory.Exists(lastWorldDir);
+            lastWorldDir = worldDirFromResult;
         }
 
         switch (result.Outcome)
@@ -318,6 +345,7 @@ public sealed class MainForm : Form
             case WorldDownloadOutcome.Success:
                 statusLabel.Text = $"Done - {result.Files.Count} file(s) saved.";
                 OnDownloadProducedBundles(result);
+                RefreshPastDownloads(lastWorldDir); // auto-select the freshly downloaded world
                 if (autoClose)
                 {
                     BeginInvoke(new Action(Close));
@@ -402,6 +430,225 @@ public sealed class MainForm : Form
             AppendLog("[cv] no plain UnityFS bundles in this download; conversion unavailable " +
                       "(encrypted files are never converted).");
         }
+    }
+
+    // ---- Past downloads picker --------------------------------------------
+
+    /// <summary>
+    /// Rescans the output directory for past downloads (world folders that
+    /// contain bundles or a downloads manifest) and repopulates the picker.
+    /// </summary>
+    /// <param name="selectDir">Folder to auto-select (e.g. a fresh download),
+    /// or null to keep/clear the current selection sensibly.</param>
+    private void RefreshPastDownloads(string? selectDir)
+    {
+        string? keepDir = pastBox.SelectedItem is string previous &&
+                          pastWorlds.TryGetValue(previous, out var previousDir)
+            ? previousDir
+            : null;
+
+        string? selectedDisplay = null;
+        suppressPastSelection = true;
+        try
+        {
+            pastBox.Items.Clear();
+            pastWorlds.Clear();
+
+            var root = outputBox.Text;
+            var candidates = new List<string>();
+            if (Directory.Exists(root))
+            {
+                foreach (var dir in Directory.EnumerateDirectories(root))
+                {
+                    var hasBundles = Directory.Exists(Path.Combine(dir, "bundles")) &&
+                                     Directory.EnumerateFiles(Path.Combine(dir, "bundles"), "*.win")
+                                         .Any();
+                    var hasManifest = File.Exists(Path.Combine(dir, "downloads-manifest.json"));
+                    if (hasBundles || hasManifest)
+                    {
+                        candidates.Add(dir);
+                    }
+                }
+            }
+
+            foreach (var dir in candidates.OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+            {
+                var name = ReadSnapshotName(dir) ?? Path.GetFileName(dir);
+                var display = name;
+                for (var suffix = 2; pastWorlds.ContainsKey(display); suffix++)
+                {
+                    display = $"{name} ({suffix})";
+                }
+
+                pastWorlds[display] = dir;
+                pastBox.Items.Add(display);
+
+                var wanted = selectDir ?? keepDir;
+                if (wanted is not null &&
+                    string.Equals(Path.GetFullPath(wanted), Path.GetFullPath(dir), StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedDisplay = display;
+                }
+            }
+        }
+        finally
+        {
+            suppressPastSelection = false;
+        }
+
+        pastBox.SelectedItem = selectedDisplay; // fires OnPastSelectionChanged when set
+    }
+
+    private void OnPastSelectionChanged()
+    {
+        if (suppressPastSelection)
+        {
+            return;
+        }
+
+        pastWorlds.TryGetValue(pastBox.SelectedItem as string ?? string.Empty, out var dir);
+        if (dir is null)
+        {
+            return;
+        }
+
+        lastWorldDir = dir;
+        lastPlainBundles.Clear();
+
+        var manifestFile = Path.Combine(dir, "downloads-manifest.json");
+        var usedManifest = false;
+        try
+        {
+            if (File.Exists(manifestFile))
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(manifestFile));
+                if (document.RootElement.TryGetProperty("files", out var files) &&
+                    files.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var file in files.EnumerateArray())
+                    {
+                        var relative = file.TryGetProperty("relativeFileName", out var r) ? r.GetString() : null;
+                        var format = file.TryGetProperty("fileFormat", out var f) ? f.GetString() : null;
+                        if (relative is null || format != "unityfs-plain" ||
+                            !relative.EndsWith(".win", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        var bundlePath = Path.GetFullPath(Path.Combine(dir, relative));
+                        if (File.Exists(bundlePath))
+                        {
+                            lastPlainBundles.Add(bundlePath);
+                            usedManifest = true;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // unreadable manifest: fall back to a plain glob below
+        }
+
+        if (!usedManifest)
+        {
+            // No manifest (or it does not list any file): offer every .win bundle;
+            // the conversion script re-verifies the magic and honest-skips what is
+            // not a plain UnityFS bundle.
+            var bundleDir = Path.Combine(dir, "bundles");
+            if (Directory.Exists(bundleDir))
+            {
+                foreach (var file in Directory.EnumerateFiles(bundleDir, "*.win").OrderBy(f => f))
+                {
+                    lastPlainBundles.Add(Path.GetFullPath(file));
+                }
+            }
+        }
+
+        openFolderButton.Enabled = Directory.Exists(dir);
+        convertButton.Enabled = lastPlainBundles.Count > 0;
+        AppendLog($"[cv] selected past download: {lastWorldDir}");
+        if (lastPlainBundles.Count > 0)
+        {
+            AppendLog($"[cv] {lastPlainBundles.Count} plain bundle(s) ready (press \"Convert to GLB\").");
+        }
+        else
+        {
+            AppendLog("[cv] no plain UnityFS bundles in this folder; conversion unavailable " +
+                      "(encrypted files are never converted).");
+        }
+    }
+
+    private static string? ReadSnapshotName(string worldDir)
+    {
+        try
+        {
+            var snapshot = Path.Combine(worldDir, "world-metadata.json");
+            if (!File.Exists(snapshot))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(snapshot));
+            if (document.RootElement.TryGetProperty("metadata", out var metadata) &&
+                metadata.TryGetProperty("name", out var name) &&
+                name.ValueKind == JsonValueKind.String)
+            {
+                var text = name.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Location of the just-downloaded world folder, derived from the files the
+    /// pipeline actually wrote (the folder name may be the map name).
+    /// </summary>
+    private static string? ResolveGivenWorldDir(WorldDownloadResult result)
+    {
+        foreach (var file in result.Files)
+        {
+            if (string.Equals(file.RelativeFileName, "world-metadata.json", StringComparison.OrdinalIgnoreCase))
+            {
+                var dir = Path.GetDirectoryName(Path.GetFullPath(file.AbsolutePath));
+                if (dir is { Length: > 0 } && Directory.Exists(dir))
+                {
+                    return dir;
+                }
+            }
+        }
+
+        foreach (var file in result.Files)
+        {
+            if (file.RelativeFileName.StartsWith("bundles/", StringComparison.OrdinalIgnoreCase))
+            {
+                var marker = Path.GetDirectoryName(Path.GetFullPath(file.AbsolutePath));
+                var dir = marker is null ? null : Path.GetDirectoryName(marker);
+                if (dir is { Length: > 0 } && Directory.Exists(dir))
+                {
+                    return dir;
+                }
+            }
+        }
+
+        if (result.WorldId is { Length: > 0 } worldId)
+        {
+            return Path.Combine(Path.GetFullPath(
+                Directory.Exists(result.Options.OutputDirectory)
+                    ? result.Options.OutputDirectory
+                    : Environment.CurrentDirectory), worldId);
+        }
+
+        return null;
     }
 
     private sealed record ConversionContext(string PWshPath, string RepoRoot, string ScriptPath, string ToolExePath);

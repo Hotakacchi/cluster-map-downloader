@@ -165,10 +165,16 @@ honest refusal handling, as-is encrypted bytes.
 1. Launch `cluster-map-downloader-gui.exe`.
 2. Paste `https://cluster.mu/w/<WORLD_ID>` into **World URL**.
 3. Press **Download**; progress (per-file, byte-level) and a log are shown.
-4. Files land in the chosen output directory (`<output>\<worldId>\bundles\`
-   by default); the manifest lists `fileFormat` + `sha256` per file.
-   **Open folder** opens the world directory.
-5. Optional: press **Convert to GLB** to turn this run's plain `.win`
+4. Files land in the chosen output directory. The world folder is named after
+   the world's public map name when the API provides one
+   (`<output>\<map name>\bundles\`), falling back to `<worldId>` when it does
+   not; the manifest lists `fileFormat` + `sha256` per file. **Open folder**
+   opens the world directory.
+5. **Past downloads** lists every world folder already in the output directory;
+   picking one re-enables **Open folder** and **Convert to GLB** for it, so
+   previously downloaded worlds can be converted again without re-downloading
+   (**Refresh** rescans).
+6. Optional: press **Convert to GLB** to turn the selected world's plain `.win`
    bundles into glTF scene models (see section 7). First use asks for a
    one-time consent to fetch the AssetRipper engine into `.work/third-party`
    (GPL-3.0, never committed); progress is streamed into the same log, and
@@ -202,7 +208,9 @@ By default (no flags) the tool stops at the delivery boundary with exit `2`.
 The opt-in mode reproduces the normal public client guest flow for **one
 specified world** (anonymous Firebase sign-up, cluster anonymous-account
 login, entry request, room-enter v2, then the venue asset list) and bundles
-land in `output\<worldId>\bundles\`:
+land in `output\<map name or worldId>\bundles\` (`<map name>` = the world's
+public name, sanitized; falls back to `<worldId>` when the API does not
+provide one):
 
 ```powershell
 # key supplied on the command line (a public web API identifier, never logged):
@@ -278,22 +286,22 @@ A downloaded `unityfs-plain` bundle can be turned into portable glTF 2.0
 (`GLB`) model data via AssetRipper (GPL-3.0 open source), which is fetched at
 runtime into `.work/third-party/` (git-ignored, never vendored) only when you
 explicitly pass `-FetchTool`. The GUI offers the same conversion as a
-**Convert to GLB** button right after a successful download (same script, same
-consent before any fetch):
+**Convert to GLB** button (for the freshly downloaded world or any world in
+the **Past downloads** list — same script, same consent before any fetch):
 
 ```powershell
 pwsh .\scripts\convert-bundle.ps1 \
-    -Bundle "output\<worldId>\bundles\<name>.win" -FetchTool
+    -Bundle "output\<map name or worldId>\bundles\<name>.win" -FetchTool
 # later runs reuse the already-fetched tool (no -FetchTool needed):
-pwsh .\scripts\convert-bundle.ps1 -Bundle "output\<worldId>\bundles\<name>.win"
+pwsh .\scripts\convert-bundle.ps1 -Bundle "output\<map name or worldId>\bundles\<name>.win"
 # extra data (optional): -Textures (decoded PNGs), -All (complete raw export)
 ```
 
-Output lands in `output\<worldId>\converted\`:
+Output lands in `output\<map name or worldId>\converted\`:
 
 | File | What it is |
 |---|---|
-| `scene\<name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures |
+| `scene\<map name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures. The scene GLB uses the world's public map name (from `<world-dir>\world-metadata.json`) when available |
 | `textures\` | decoded PNG textures (with `-Textures`) |
 | `full-export\` | the complete raw AssetRipper export (with `-All`) |
 | `manifest-<name>.json` | source/output `sha256` + sizes + limits disclosure |
