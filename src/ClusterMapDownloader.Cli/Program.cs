@@ -69,10 +69,14 @@ internal static class Program
             Console.Out.WriteLine("""
                 Usage: cluster-map-downloader tidy-glb <glb-file> [more.glb ...] [--json]
 
-                Repairs glTF 2.0 binary (GLB) scene exports in place: meshes that were
-                exported WITHOUT a NORMAL attribute (common in AssetRipper's generic
-                output) get freshly computed smooth per-vertex normals, because glTF
-                consumers such as three.js render normal-less meshes unlit/black.
+                Repairs glTF 2.0 binary (GLB) scene exports in place:
+                  - meshes exported WITHOUT a NORMAL attribute (common in
+                    AssetRipper's generic output) get freshly computed smooth
+                    per-vertex normals, because glTF consumers such as three.js
+                    render normal-less meshes unlit/black;
+                  - materials WITHOUT a metallicRoughness texture get an explicit
+                    metallicFactor of 0, because glTF's default metallic is 1
+                    (pure metal), which renders black without an environment map.
 
                 A run with nothing to fix leaves every file byte-identical. Reports:
                   plain  one human-readable line per file
@@ -119,11 +123,22 @@ internal static class Program
             }
             else
             {
+                var parts = new List<string>();
+                if (report.NormalsGeneratedPrimitives > 0)
+                {
+                    parts.Add($"normals for {report.NormalsGeneratedPrimitives} primitive(s) " +
+                              $"({report.NormalsGeneratedTriangles} triangle(s), " +
+                              $"{report.NormalsGeneratedVertices} vertices)");
+                }
+
+                if (report.MetallicSanitizedMaterials > 0)
+                {
+                    parts.Add($"metallicFactor=0 for {report.MetallicSanitizedMaterials} " +
+                              "material(s) without a metallicRoughness texture");
+                }
+
                 Console.Out.WriteLine(report.Changed
-                    ? $"[tidy] {Path.GetFileName(report.File)}: generated normals for " +
-                      $"{report.NormalsGeneratedPrimitives} primitive(s), " +
-                      $"{report.NormalsGeneratedTriangles} triangle(s), " +
-                      $"{report.NormalsGeneratedVertices} vertices " +
+                    ? $"[tidy] {Path.GetFileName(report.File)}: {string.Join("; ", parts)} " +
                       $"({report.BytesBefore} -> {report.BytesAfter} bytes)"
                     : $"[tidy] {Path.GetFileName(report.File)}: nothing to fix " +
                       $"(skipped {report.SkippedUnsupportedPrimitives} unsupported primitive(s))");

@@ -27,8 +27,11 @@
        repository's own GlbTidier (the `tidy-glb` command of the CLI exe):
        meshes that AssetRipper exported WITHOUT a NORMAL attribute receive
        freshly computed smooth vertex normals - glTF consumers such as
-       three.js render normal-less meshes unlit/black. The repair is recorded
-       in the manifest "tidy" section; the tidier CLI is auto-published once
+       three.js render normal-less meshes unlit/black - and every material
+       without a metallicRoughness texture is forced to an explicit
+       metallicFactor of 0 (glTF's default metallic is 1 = pure metal, which
+       renders black without an environment map). The repairs are recorded in
+       the manifest "tidy" section; the tidier CLI is auto-published once
        when the dotnet SDK is available, and a missing SDK is reported
        honestly while the GLB stays exactly as exported.
     5. Deliverables are copied into <worldDir>\converted\ :
@@ -251,13 +254,21 @@ function Invoke-GlbTidy {
         $jsonLine = @($raw) | Where-Object { $_ -like '{*' } | Select-Object -First 1
         if (-not $jsonLine) { throw 'tidy-glb printed no JSON report line' }
         $report = $jsonLine | ConvertFrom-Json
-        $applied = [int]$report.normals_generated_primitives -gt 0
+        $applied = ([int]$report.normals_generated_primitives -gt 0) -or ([int]$report.metallic_sanitized_materials -gt 0)
         if ($applied) {
-            Write-StepOk ('Tidied: {0} normal set(s) regenerated ({1} vertices, {2} triangles).' -f
-                $report.normals_generated_primitives, $report.normals_generated_vertices, $report.normals_generated_triangles)
+            $details = @()
+            if ([int]$report.normals_generated_primitives -gt 0) {
+                $details += ('normals for {0} primitive(s) ({1} vertices, {2} triangles)' -f
+                    $report.normals_generated_primitives, $report.normals_generated_vertices, $report.normals_generated_triangles)
+            }
+            if ([int]$report.metallic_sanitized_materials -gt 0) {
+                $details += ('metallicFactor=0 for {0} material(s) without a metallicRoughness texture' -f
+                    $report.metallic_sanitized_materials)
+            }
+            Write-StepOk ('Tidied: {0}.' -f ($details -join '; '))
         }
         else {
-            Write-StepOk ('Tidy: {0} - nothing to fix (all triangle drawers already have normals).' -f (Split-Path -Leaf $GlbPath))
+            Write-StepOk ('Tidy: {0} - nothing to fix (normals and metallic defaults already repaired).' -f (Split-Path -Leaf $GlbPath))
         }
         return [pscustomobject]@{
             applied                      = $applied
@@ -265,6 +276,7 @@ function Invoke-GlbTidy {
             normalsGeneratedTriangles    = $report.normals_generated_triangles
             normalsGeneratedVertices     = $report.normals_generated_vertices
             skippedUnsupportedPrimitives = $report.skipped_unsupported_primitives
+            metallicSanitizedMaterials   = $report.metallic_sanitized_materials
         }
     }
     catch {
@@ -503,6 +515,8 @@ try {
             'shaders export as placeholder standard materials',
             'meshes that shipped without vertex normals get freshly computed normals (see tidy):',
             '  consumers such as three.js would render them unlit/black instead',
+            'materials without a metallicRoughness texture are forced to metallic=0 (see tidy):',
+            '  glTF defaults metallic to 1 and a pure metal renders black without envmaps',
             'lightmaps and shader-driven shading are not carried over; walls may look flat'
         )
         rawExport   = $rawDir
@@ -529,6 +543,10 @@ Limits (honest):
     this repository's tidy-glb CLI when it is available (they would render
     unlit/black in three.js and similar viewers otherwise). The manifest's
     "tidy" section records each scene file honestly, including skips.
+  - Materials without a metallicRoughness texture are forced to metallic=0
+    by the same tidy pass: glTF's default metallic is 1 (pure metal), which
+    renders black where no environment map exists. Unity's default is
+    dielectric (metallic 0), matching cluster's stylized look.
 
 The 3D data is copyrighted by the world creators. Keep it for personal
 study/viewing; do not redistribute, publish, or reuse it. Converted files

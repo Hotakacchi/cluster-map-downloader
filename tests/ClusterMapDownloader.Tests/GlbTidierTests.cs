@@ -329,6 +329,141 @@ public class GlbTidierTests
     private static readonly int[] TriangleIndices = [0, 1, 2];
 
     [Fact]
+    public void Metallic_factor_is_zeroed_when_mr_texture_is_missing()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = BuildTriangleGlb(UpFacingTriangle, TriangleIndices, existingNormals: true);
+            root["materials"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["name"] = "StylizedConcrete",
+                    ["pbrMetallicRoughness"] = new JsonObject
+                    {
+                        ["metallicFactor"] = 1.0,
+                        ["roughnessFactor"] = 1.0,
+                    },
+                },
+            };
+            var path = WriteGlb(dir, "metal.glb", root, bin);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(0, report.NormalsGeneratedPrimitives);
+            Assert.Equal(1, report.MetallicSanitizedMaterials);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var pbr = Assert.IsType<JsonObject>(
+                Assert.IsType<JsonObject>(Assert.IsType<JsonArray>(rootBack["materials"])[0])["pbrMetallicRoughness"]);
+            Assert.Equal(0.0, pbr["metallicFactor"]?.GetValue<double>() ?? -1.0, 6);
+
+            // second run must be a byte-identical no-op
+            var afterFirst = File.ReadAllBytes(path);
+            var second = GlbTidier.TidyFile(path);
+            Assert.False(second.Changed);
+            Assert.Equal(afterFirst, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Missing_pbr_object_is_created_with_zero_metallic()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = BuildTriangleGlb(UpFacingTriangle, TriangleIndices, existingNormals: true);
+            root["materials"] = new JsonArray { new JsonObject { ["name"] = "BareMaterial" } };
+            var path = WriteGlb(dir, "bare.glb", root, bin);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.Equal(1, report.MetallicSanitizedMaterials);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var material = Assert.IsType<JsonObject>(Assert.IsType<JsonArray>(rootBack["materials"])[0]);
+            var pbr = Assert.IsType<JsonObject>(material["pbrMetallicRoughness"]);
+            Assert.Equal(0.0, pbr["metallicFactor"]?.GetValue<double>() ?? -1.0, 6);
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Materials_with_mr_texture_are_left_untouched()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = BuildTriangleGlb(UpFacingTriangle, TriangleIndices, existingNormals: true);
+            root["textures"] = new JsonArray { new JsonObject() };
+            root["materials"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["name"] = "RealPbrExport",
+                    ["pbrMetallicRoughness"] = new JsonObject
+                    {
+                        ["metallicFactor"] = 1.0,
+                        ["metallicRoughnessTexture"] = new JsonObject { ["index"] = 0 },
+                    },
+                },
+            };
+            var path = WriteGlb(dir, "pbr.glb", root, bin);
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.Equal(0, report.MetallicSanitizedMaterials);
+            Assert.Equal(before, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Normals_and_metallic_fixes_can_land_in_one_run()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = BuildTriangleGlb(UpFacingTriangle, TriangleIndices);
+            root["materials"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["name"] = "EverythingWrong",
+                    ["pbrMetallicRoughness"] = new JsonObject { ["metallicFactor"] = 1.0 },
+                },
+            };
+            var path = WriteGlb(dir, "mixed.glb", root, bin);
+            var sizeBefore = new FileInfo(path).Length;
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(1, report.NormalsGeneratedPrimitives);
+            Assert.Equal(1, report.MetallicSanitizedMaterials);
+            Assert.True(report.BytesAfter > sizeBefore);
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
     public void Indexed_triangle_gets_smooth_unit_normals()
     {
         var dir = TempDir();

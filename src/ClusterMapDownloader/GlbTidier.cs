@@ -35,6 +35,14 @@ public sealed record GlbTidyResult
     /// <summary>Primitives left untouched because their data shape is unsupported.</summary>
     public int SkippedUnsupportedPrimitives { get; init; }
 
+    /// <summary>
+    /// Materials whose metallicFactor was explicitly set to 0 because they
+    /// carry no metallicRoughness texture: glTF's default metallic is 1
+    /// (pure metal), which renders black in viewers without an environment
+    /// map; Unity's default is dielectric.
+    /// </summary>
+    public int MetallicSanitizedMaterials { get; init; }
+
     /// <summary>File size in bytes before the run.</summary>
     public long BytesBefore { get; init; }
 
@@ -42,7 +50,7 @@ public sealed record GlbTidyResult
     public long BytesAfter { get; init; }
 
     /// <summary>True when the file was rewritten; a run with nothing to fix writes nothing.</summary>
-    public bool Changed => NormalsGeneratedPrimitives > 0;
+    public bool Changed => NormalsGeneratedPrimitives > 0 || MetallicSanitizedMaterials > 0;
 }
 
 /// <summary>
@@ -55,6 +63,11 @@ public sealed record GlbTidyResult
 /// normals from POSITION + indices (area-weighted accumulation, degenerate
 /// vertices get an up vector) and appends them to the GLB: new float32 VEC3
 /// bufferViews + accessors, 4-byte aligned, BIN/BUFFERS byteLength updated.
+///
+/// A second pass fixes the metallic default: every material WITHOUT a
+/// metallicRoughness texture is forced to an explicit metallicFactor of 0.
+/// glTF's default metallic is 1 (pure metal); with no environment map such
+/// materials render black regardless of their base color texture.
 ///
 /// Deliberately conservative:
 ///  - triangles primitives only (MODE 4); anything else is counted in
@@ -196,7 +209,50 @@ public static class GlbTidier
             }
         }
 
-        if (primitivesFixed == 0)
+        // Metallic sanity pass: AssetRipper's generic export leaves every
+        // material at glTF's default metallicFactor = 1 (pure metal) with no
+        // metallicRoughness texture, and a pure metal reflects only the
+        // environment map - without one it renders black in three.js and
+        // most other consumers. Unity's default is dielectric (metallic 0),
+        // and cluster's stylized materials are unlit/basic shaders, so any
+        // material without a metallicRoughness texture is forced to an
+        // explicit metallicFactor of 0. Materials WITH such a texture are
+        // real PBR exports and are never touched.
+        var metalSanitized = 0;
+        var materials = root["materials"] as JsonArray;
+        if (materials is not null)
+        {
+            for (var materialIndex = 0; materialIndex < materials.Count; materialIndex++)
+            {
+                if (materials[materialIndex] is not JsonObject material)
+                {
+                    continue;
+                }
+
+                if (material["pbrMetallicRoughness"] is not JsonObject pbr)
+                {
+                    pbr = new JsonObject();
+                    material["pbrMetallicRoughness"] = pbr;
+                }
+
+                if (pbr["metallicRoughnessTexture"] is not null)
+                {
+                    continue;
+                }
+
+                if (pbr["metallicFactor"] is JsonValue metalValue &&
+                    metalValue.TryGetValue<double>(out var metalFactor) &&
+                    Math.Abs(metalFactor) <= 1e-6)
+                {
+                    continue; // already an explicit 0 - keeps re-runs no-ops
+                }
+
+                pbr["metallicFactor"] = 0.0;
+                metalSanitized++;
+            }
+        }
+
+        if (primitivesFixed == 0 && metalSanitized == 0)
         {
             return new GlbTidyResult
             {
@@ -231,6 +287,7 @@ public static class GlbTidier
             NormalsGeneratedTriangles = trianglesFixed,
             NormalsGeneratedVertices = verticesFixed,
             SkippedUnsupportedPrimitives = skippedUnsupported,
+            MetallicSanitizedMaterials = metalSanitized,
             BytesBefore = before,
             BytesAfter = bytesAfter,
         };
