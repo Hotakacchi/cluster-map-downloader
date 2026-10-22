@@ -28,11 +28,109 @@ internal static class Program
         {
             "download" => RunWorldCommand(args[1..], forceMetadataOnly: false),
             "metadata" => RunWorldCommand(args[1..], forceMetadataOnly: true),
+            "tidy-glb" => RunTidyGlb(args[1..]),
             "version" => PrintVersion(),
             "help" => PrintHelp(outExit: true),
             var unknown when unknown.StartsWith('-') => UnknownOption(unknown),
             var unknown => UnknownCommand(unknown),
         };
+    }
+
+    private static int RunTidyGlb(string[] args)
+    {
+        var files = new List<string>();
+        var json = false;
+        var help = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--json":
+                    json = true;
+                    break;
+                case "-h":
+                case "--help":
+                    help = true;
+                    break;
+                default:
+                    if (args[i].StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"Unknown option: {args[i]}");
+                        return ExitCodes.Usage;
+                    }
+                    files.Add(args[i]);
+                    break;
+            }
+        }
+
+        if (help)
+        {
+            Console.Out.WriteLine("""
+                Usage: cluster-map-downloader tidy-glb <glb-file> [more.glb ...] [--json]
+
+                Repairs glTF 2.0 binary (GLB) scene exports in place: meshes that were
+                exported WITHOUT a NORMAL attribute (common in AssetRipper's generic
+                output) get freshly computed smooth per-vertex normals, because glTF
+                consumers such as three.js render normal-less meshes unlit/black.
+
+                A run with nothing to fix leaves every file byte-identical. Reports:
+                  plain  one human-readable line per file
+                  --json one minified snake_case report object per file (JSONL)
+                """);
+            return ExitCodes.Success;
+        }
+
+        if (files.Count == 0)
+        {
+            Console.Error.WriteLine("Missing GLB path. Example:");
+            Console.Error.WriteLine("  cluster-map-downloader tidy-glb .\\output\\<world>\\converted\\scene\\<map>.glb");
+            return ExitCodes.Usage;
+        }
+
+        var tidyJsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        };
+
+        foreach (var file in files)
+        {
+            GlbTidyResult report;
+            try
+            {
+                report = GlbTidier.TidyFile(file);
+            }
+            catch (GlbTidyException exception)
+            {
+                Console.Error.WriteLine($"[tidy] {Path.GetFileName(file)}: {exception.Message}");
+                Console.Error.WriteLine("       The file was left untouched; run again after checking the source data.");
+                return ExitCodes.Error;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"[tidy] {Path.GetFileName(file)}: {exception.Message}");
+                return ExitCodes.Error;
+            }
+
+            if (json)
+            {
+                Console.Out.WriteLine(JsonSerializer.Serialize(report, tidyJsonOptions));
+            }
+            else
+            {
+                Console.Out.WriteLine(report.Changed
+                    ? $"[tidy] {Path.GetFileName(report.File)}: generated normals for " +
+                      $"{report.NormalsGeneratedPrimitives} primitive(s), " +
+                      $"{report.NormalsGeneratedTriangles} triangle(s), " +
+                      $"{report.NormalsGeneratedVertices} vertices " +
+                      $"({report.BytesBefore} -> {report.BytesAfter} bytes)"
+                    : $"[tidy] {Path.GetFileName(report.File)}: nothing to fix " +
+                      $"(skipped {report.SkippedUnsupportedPrimitives} unsupported primitive(s))");
+            }
+        }
+
+        return ExitCodes.Success;
     }
 
     private static int RunWorldCommand(string[] args, bool forceMetadataOnly)
@@ -264,6 +362,7 @@ internal static class Program
             Usage:
               cluster-map-downloader download <world-url> [options]
               cluster-map-downloader metadata <world-url> [options]
+              cluster-map-downloader tidy-glb <glb-file> [more.glb ...] [--json]
               cluster-map-downloader version
               cluster-map-downloader help
 
@@ -276,6 +375,9 @@ internal static class Program
                          entry request, room-enter) to list and download that single
                          world's AssetBundles. See docs/RESEARCH.md and README.md.
               metadata   Same as download, but stops after metadata/venue output.
+              tidy-glb   Regenerate missing vertex normals in exported GLB scene
+                         files (run automatically by scripts/convert-bundle.ps1;
+                         see README section 7).
 
             Options:
               -o, --output <dir>       Output directory (default .\output\<worldId> under CWD)

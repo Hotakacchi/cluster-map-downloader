@@ -23,7 +23,15 @@
        which emits one GLB per scene hierarchy object (whole-world model with
        node hierarchy, standard materials and embedded textures), per-mesh
        GLBs, PNG textures, audio and JSON asset dumps.
-    4. Deliverables are copied into <worldDir>\converted\ :
+    4. Every copied scene GLB then gets an in-place repair pass by this
+       repository's own GlbTidier (the `tidy-glb` command of the CLI exe):
+       meshes that AssetRipper exported WITHOUT a NORMAL attribute receive
+       freshly computed smooth vertex normals - glTF consumers such as
+       three.js render normal-less meshes unlit/black. The repair is recorded
+       in the manifest "tidy" section; the tidier CLI is auto-published once
+       when the dotnet SDK is available, and a missing SDK is reported
+       honestly while the GLB stays exactly as exported.
+    5. Deliverables are copied into <worldDir>\converted\ :
 
            converted\scene\<name>.glb    the world scene model (main output)
            converted\README.txt          personal-use + limits notice
@@ -190,6 +198,86 @@ function Get-MetadataMapName {
 }
 
 # ---------------------------------------------------------------------------
+# GLB tidy (normals repair by this repo's own CLI)
+# ---------------------------------------------------------------------------
+
+function Get-TidyCliPath {
+    <#
+        Returns the published tidy-glb CLI exe path, auto-publishing the CLI
+        once when dotnet is available. $null (with an honest warning) when the
+        repair pass cannot run - conversion continues with the raw export.
+    #>
+    param()
+    $exe = Join-Path $paths.CliPublishDir 'cluster-map-downloader.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        Write-StepWarn 'dotnet SDK not found: skipping the GLB normals-repair pass (tidy-glb).'
+        Write-Host '      Meshes exported without vertex normals would render black in three.js and' -ForegroundColor Yellow
+        Write-Host '      similar viewers. Publish the CLI once to enable the repair:' -ForegroundColor Yellow
+        Write-Host ('        dotnet publish {0} -c Release -o {1}' -f $paths.CliProject, $paths.CliPublishDir) -ForegroundColor Yellow
+        return $null
+    }
+    try {
+        Write-Step 'Publishing the tidy-glb CLI (first conversion run only)...'
+        Invoke-DotNetTool @('publish', $paths.CliProject, '-c', 'Release', '-o', $paths.CliPublishDir, '--nologo', '-v', 'q')
+    }
+    catch {
+        Write-StepWarn ("Could not publish the tidy-glb CLI automatically: {0}" -f $_.Exception.Message)
+        return $null
+    }
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    return $null
+}
+
+function Invoke-GlbTidy {
+    <#
+        Runs tidy-glb on one GLB in place (missing vertex normals regenerated).
+        Returns a manifest-shaped summary; failures are reported honestly and
+        never abort the conversion - the GLB stays as exported.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$GlbPath,
+        [AllowEmptyString()][string]$Exe = ''
+    )
+    if (-not $Exe) {
+        return [pscustomobject]@{
+            applied = $false
+            note    = 'tidy skipped: the tidy-glb CLI is unavailable (no dotnet SDK / publish failed)'
+        }
+    }
+    try {
+        $raw = & $Exe tidy-glb $GlbPath --json
+        if ($LASTEXITCODE -ne 0) { throw "tidy-glb exited with code $LASTEXITCODE" }
+        $jsonLine = @($raw) | Where-Object { $_ -like '{*' } | Select-Object -First 1
+        if (-not $jsonLine) { throw 'tidy-glb printed no JSON report line' }
+        $report = $jsonLine | ConvertFrom-Json
+        $applied = [int]$report.normals_generated_primitives -gt 0
+        if ($applied) {
+            Write-StepOk ('Tidied: {0} normal set(s) regenerated ({1} vertices, {2} triangles).' -f
+                $report.normals_generated_primitives, $report.normals_generated_vertices, $report.normals_generated_triangles)
+        }
+        else {
+            Write-StepOk ('Tidy: {0} - nothing to fix (all triangle drawers already have normals).' -f (Split-Path -Leaf $GlbPath))
+        }
+        return [pscustomobject]@{
+            applied                      = $applied
+            normalsGeneratedPrimitives   = $report.normals_generated_primitives
+            normalsGeneratedTriangles    = $report.normals_generated_triangles
+            normalsGeneratedVertices     = $report.normals_generated_vertices
+            skippedUnsupportedPrimitives = $report.skipped_unsupported_primitives
+        }
+    }
+    catch {
+        Write-StepFail ("tidy-glb failed for {0}: {1}" -f (Split-Path -Leaf $GlbPath), $_.Exception.Message)
+        Write-StepWarn 'Continuing with the un-tidied GLB; the manifest records the failure honestly.'
+        return [pscustomobject]@{
+            applied = $false
+            error   = $_.Exception.Message
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 Import-Module (Join-Path $PSScriptRoot 'lib' 'ClusterMapDownloaderSupport.psm1') -Force -DisableNameChecking
@@ -328,6 +416,7 @@ try {
     }
 
     # --- 7. harvest deliverables -------------------------------------------
+    $tidyExe = Get-TidyCliPath
     $sceneOut = Join-Path $convertedRoot 'scene'
     $null = New-Item -ItemType Directory -Force -Path $sceneOut
     $sceneGlbs = @(Get-ChildItem -LiteralPath (Join-Path $rawDir 'Assets' 'SceneHierarchyObject') -Filter '*.glb' -File -ErrorAction SilentlyContinue)
@@ -337,12 +426,15 @@ try {
         $null = New-Item -ItemType Directory -Force -Path $meshOut
         $meshGlbs = @(Get-ChildItem -LiteralPath (Join-Path $rawDir 'Assets' 'Mesh') -Filter '*.glb' -File -ErrorAction SilentlyContinue)
         foreach ($meshGlb in $meshGlbs) {
-            Copy-Item -LiteralPath $meshGlb.FullName -Destination (Get-UniqueDestination -Path (Join-Path $meshOut $meshGlb.Name))
+            $meshDestination = Get-UniqueDestination -Path (Join-Path $meshOut $meshGlb.Name)
+            Copy-Item -LiteralPath $meshGlb.FullName -Destination $meshDestination
+            $null = Invoke-GlbTidy -GlbPath $meshDestination -Exe $tidyExe
         }
         throw 'The bundle produced no scene-level GLB; see the AssetRipper log for details.'
     }
 
     $outputs = @()
+    $tidySummaries = @()
     $mapName = Get-MetadataMapName -MetaPath (Join-Path (Split-Path -Parent $_bundleDir) 'world-metadata.json')
     if ($mapName) {
         Write-StepOk ("Map name from metadata: {0} (scene GLB will use it)." -f $mapName)
@@ -351,11 +443,17 @@ try {
         $sceneBaseName = if ($mapName) { "{0}.glb" -f $mapName } else { $sceneGlb.Name }
         $destination = Get-UniqueDestination -Path (Join-Path $sceneOut $sceneBaseName)
         Copy-Item -LiteralPath $sceneGlb.FullName -Destination $destination
+        $tidySummary = Invoke-GlbTidy -GlbPath $destination -Exe $tidyExe
+        $tidySummaries += [pscustomobject]@{
+            file   = $destination.Substring($convertedRoot.Length + 1)
+            result = $tidySummary
+        }
         $outputs += [pscustomobject]@{
             role      = 'scene-glb'
             file      = $destination.Substring($convertedRoot.Length + 1)
             bytes     = (Get-Item -LiteralPath $destination).Length
             sha256    = Get-Sha256LowerHex -Path $destination
+            tidy      = $tidySummary
         }
     }
 
@@ -395,10 +493,17 @@ try {
             mode    = 'runtime-fetched (never vendored); headless WebUI: LoadFile + Export/PrimaryContent'
         }
         outputs     = $outputs
+        tidy        = [pscustomobject]@{
+            tool  = 'GlbTidier (the tidy-glb command of this repository''s CLI), in place after each scene GLB was copied'
+            files = $tidySummaries
+        }
         limits      = @(
             'generic model data only: meshes, materials, textures, node transforms',
             'no cluster gimmick/script behavior in converted models by design',
-            'shaders export as placeholder standard materials'
+            'shaders export as placeholder standard materials',
+            'meshes that shipped without vertex normals get freshly computed normals (see tidy):',
+            '  consumers such as three.js would render them unlit/black instead',
+            'lightmaps and shader-driven shading are not carried over; walls may look flat'
         )
         rawExport   = $rawDir
     }
@@ -418,7 +523,12 @@ Limits (honest):
   - Generic model data only: meshes, materials, textures, node transforms.
   - cluster-specific components (gimmicks, colliders in cluster's format,
     spawn logic, scripts) are NOT converted - no behavior.
-  - Shaders come out as placeholder standard materials.
+  - Shaders come out as placeholder standard materials; lightmaps and baked
+    shading are not carried over, so walls may look flatter than in-game.
+  - Meshes that shipped without vertex normals are repaired in place by
+    this repository's tidy-glb CLI when it is available (they would render
+    unlit/black in three.js and similar viewers otherwise). The manifest's
+    "tidy" section records each scene file honestly, including skips.
 
 The 3D data is copyrighted by the world creators. Keep it for personal
 study/viewing; do not redistribute, publish, or reuse it. Converted files

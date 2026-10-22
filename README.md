@@ -311,10 +311,10 @@ Output lands in `output\<map name or worldId>\converted\`:
 
 | File | What it is |
 |---|---|
-| `scene\<map name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures. The scene GLB uses the world's public map name (from `<world-dir>\world-metadata.json`) when available |
+| `scene\<map name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures. The scene GLB uses the world's public map name (from `<world-dir>\world-metadata.json`) when available and gets one in-place repair pass by this repository's [`GlbTidier`](docs/ARCHITECTURE.md#3-library-surface-clustermapdownloader): meshes that shipped without vertex normals receive freshly computed smooth normals (glTF consumers such as three.js render normal-less meshes unlit/black; the repair is recorded in the manifest's `tidy` section) |
 | `textures\` | decoded PNG textures (with `-Textures`) |
 | `full-export\` | the complete raw AssetRipper export (with `-All`) |
-| `manifest-<name>.json` | source/output `sha256` + sizes + limits disclosure |
+| `manifest-<name>.json` | source/output `sha256` + sizes + counts + limits disclosure (incl. the `tidy` normals-repair report) |
 | `README.txt` | personal-use + limits notice |
 
 - **three.js**: inside the GUI via **Open 3D viewer** (the same page renders
@@ -330,9 +330,13 @@ Output lands in `output\<map name or worldId>\converted\`:
 Honest limits: the conversion is generic 3D model data only - meshes,
 materials, textures and node transforms. cluster-specific components
 (gimmicks, spawn logic, scripts), source shaders and lighting behavior do not
-come across (shaders become placeholder standard materials). Encrypted
-bundles are never decrypted: the script magic-checks `UnityFS\0` first and
-skips anything else honestly (exit code 2).
+come across (shaders become placeholder standard materials; lightmaps and
+baked shading are not carried over, so walls can look flatter than in-game).
+Meshes that ship without vertex normals are repaired in place by GlbTidier
+(see the `tidy` section in the manifest; a run where the repair CLI is
+unavailable reports the skip honestly instead). Encrypted bundles are never
+decrypted: the script magic-checks `UnityFS\0` first and skips anything else
+honestly (exit code 2).
 
 The converted data is **personal use only** - the 3D content's copyright
 belongs to the world creators; do not redistribute or reuse it. Converted
