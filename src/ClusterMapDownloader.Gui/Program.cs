@@ -1,11 +1,11 @@
-using ClusterMapDownloader.Gui;
+using ClusterMapDownloader;
 
 namespace ClusterMapDownloader.Gui;
 
 internal static class Program
 {
     /// <summary>
-    /// GUI entry point. Optional CLI-style arguments (used by scripts and tests):
+    /// GUI entry point with optional automation arguments:
     ///     cluster-map-downloader-gui.exe [&lt;world-url&gt;] [-o &lt;output-dir&gt;] [--auto-close]
     /// A preset URL starts the download automatically right after launch;
     /// --auto-close closes the window when the run finishes (CI/live checks).
@@ -55,8 +55,22 @@ internal static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) =>
         {
-            MessageBox.Show(SecretMasker.Mask(e.Exception.ToString()), "予期しないエラー",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            try
+            {
+                Directory.CreateDirectory(Environment.CurrentDirectory);
+                File.WriteAllText(
+                    Path.Combine(AppContext.BaseDirectory, "gui-crash.log"), e.Exception.ToString());
+            }
+            catch
+            {
+                // best effort
+            }
+
+            MessageBox.Show(
+                SecretMasker.Mask(e.Exception.Message) + "\n\n(Details: gui-crash.log)",
+                "Unexpected error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
         };
         Application.Run(new MainForm(urlArg, outputArg, autoClose));
     }

@@ -28,7 +28,7 @@ public sealed class MainForm : Form
     {
         autoClose = autoCloseRequested;
 
-        Text = "cluster-map-downloader — クラスタ公開ワールド取得ツール(非公式・研究用)";
+        Text = "cluster-map-downloader";
         MinimumSize = new Size(760, 480);
         Size = new Size(880, 640);
         StartPosition = FormStartPosition.CenterScreen;
@@ -48,11 +48,11 @@ public sealed class MainForm : Form
             Font = new Font(FontFamily.GenericMonospace, 8.5f),
         };
 
-        downloadButton = new Button { Text = "ダウンロード", Dock = DockStyle.Fill };
-        cancelButton = new Button { Text = "中止", Enabled = false, Dock = DockStyle.Fill };
+        downloadButton = new Button { Text = "Download", Dock = DockStyle.Fill };
+        cancelButton = new Button { Text = "Cancel", Enabled = false, Dock = DockStyle.Fill };
         openFolderButton = new Button
         {
-            Text = "保存フォルダを開く",
+            Text = "Open folder",
             Dock = DockStyle.Fill,
             Enabled = false,
         };
@@ -74,7 +74,7 @@ public sealed class MainForm : Form
 
         statusLabel = new Label
         {
-            Text = " 待機中 …(ワールドURL を貼って「ダウンロード」)",
+            Text = "Paste a world URL and press Download.",
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft,
             Dock = DockStyle.Fill,
@@ -104,7 +104,7 @@ public sealed class MainForm : Form
 
         var urlLabel = new Label
         {
-            Text = "ワールドURL:",
+            Text = "World URL:",
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 6, 6, 0),
         };
@@ -114,14 +114,14 @@ public sealed class MainForm : Form
 
         var outputLabel = new Label
         {
-            Text = "保存先:",
+            Text = "Output:",
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 6, 6, 0),
         };
         layoutRoot.Controls.Add(outputLabel, 0, 1);
         layoutRoot.Controls.Add(outputBox, 1, 1);
 
-        var browse = new Button { Text = "参照…", Dock = DockStyle.Fill };
+        var browse = new Button { Text = "Browse...", Dock = DockStyle.Fill };
         browse.Click += (_, _) =>
         {
             using var dialog = new FolderBrowserDialog { ShowNewFolderButton = true };
@@ -156,8 +156,7 @@ public sealed class MainForm : Form
 
         var footer = new Label
         {
-            Text = "公開ワールド専用。匿名 Firebase ゲストサインアップ(無料クライアント新規導入と同じ 1 回分;" +
-                   "トークンはメモリのみ・保存/表示なし)。単一ワールド、列挙なし、AES 暗号化ファイルはそのまま保存(復号なし)。",
+            Text = "Public worlds only | no accounts | encrypted files are saved as-is | unofficial, not affiliated with Cluster",
             ForeColor = SystemColors.GrayText,
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
@@ -186,17 +185,14 @@ public sealed class MainForm : Form
         var worldUrl = urlBox.Text.Trim();
         if (worldUrl.Length == 0)
         {
-            MessageBox.Show(
-                this,
-                "ワールドURL を入力してください。例:\n  https://cluster.mu/w/<WORLD_ID>",
-                "URL が必要です",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            MessageBox.Show(this, "Enter a world URL.", "No URL",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         cts = new CancellationTokenSource();
         SetBusy(true);
+        statusLabel.Text = "Working...";
 
         var resolver = GuestEntryResolverFactory.Create(api: new ClusterApiOptions());
         if (resolver is null)
@@ -204,14 +200,9 @@ public sealed class MainForm : Form
             SetBusy(false);
             MessageBox.Show(
                 this,
-                "公開 Firebase Web API キーを取得できるローカル資料が見つかりませんでした。\n\n" +
-                "次のいずれかを用意してください:\n" +
-                " 1. キーを直接指定(--firebase-api-key / Firebase web API key)\n" +
-                " 2. 解凍済み cluster クライアントパッケージのディレクトリ\n" +
-                "    (*_Data/resources.assets を含むフォルダ)\n" +
-                " 3. IL2CPP ダンプ(stringliteral.json)のあるディレクトリ\n\n" +
-                "インストール済みの cluster クライアントは自動探索されます。",
-                "キーの自動取得に失敗",
+                "Could not find a local cluster client to read the public key from.\n\n" +
+                "Install/extract the cluster client, or run the CLI with --firebase-api-key.",
+                "No client found",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
             return;
@@ -233,27 +224,30 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
-            statusLabel.Text = " 中止しました。";
+            statusLabel.Text = "Cancelled.";
         }
         catch (Exception ex)
         {
             // Any unexpected GUI-side exception must never silently kill the run:
-            // surface it in the log, the status line, and a persistent crash file.
-            var detail = ex.ToString();
-            statusLabel.Text = $" エラー:{SecretMasker.Mask(ex.Message)}";
+            // surface a short message here and the detail in a persistent crash file.
+            statusLabel.Text = "Error: " + SecretMasker.Mask(ex.Message);
             try
             {
                 Directory.CreateDirectory(outputBox.Text);
                 await File.WriteAllTextAsync(
-                    Path.Combine(outputBox.Text, "gui-crash.log"), detail, cts.Token).ConfigureAwait(true);
+                    Path.Combine(outputBox.Text, "gui-crash.log"), ex.ToString(), cts.Token).ConfigureAwait(true);
             }
             catch
             {
                 // best effort
             }
 
-            MessageBox.Show(this, SecretMasker.Mask(detail), "予期しないエラー",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(
+                this,
+                SecretMasker.Mask(ex.Message) + "\n\n(Details: gui-crash.log)",
+                "Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
         }
         finally
         {
@@ -290,7 +284,7 @@ public sealed class MainForm : Form
         switch (result.Outcome)
         {
             case WorldDownloadOutcome.Success:
-                statusLabel.Text = $" 完了:{result.Files.Count} 個のファイルを保存しました。";
+                statusLabel.Text = $"Done — {result.Files.Count} file(s) saved.";
                 if (autoClose)
                 {
                     BeginInvoke(new Action(Close));
@@ -299,38 +293,36 @@ public sealed class MainForm : Form
                 break;
 
             case WorldDownloadOutcome.NotImplemented:
-                statusLabel.Text = " 停止:既定境界(未実装)。";
-                MessageBox.Show(this, result.FailureMessage, "既定では未実装", MessageBoxButtons.OK,
+                statusLabel.Text = "Stopped: not implemented.";
+                MessageBox.Show(this, result.FailureMessage, "Not implemented", MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
                 break;
 
             case WorldDownloadOutcome.RequiresNonPublicAccess:
-                statusLabel.Text = " 停止:cluster がゲストフローを拒否しました。";
+                statusLabel.Text = "Stopped: cluster refused this download.";
                 MessageBox.Show(
                     this,
-                    "ゲストフローは cluster に拒否されました(理由はログにあります)。\n" +
-                    "このツールは、cluster に拒否されたアクセスを迂回しません。\n\n" +
                     SecretMasker.Mask(result.Delivery?.Reason ?? result.FailureMessage ?? string.Empty),
-                    "ゲストフロー拒否",
+                    "Refused",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Stop);
                 break;
 
             case WorldDownloadOutcome.NotPublic:
-                statusLabel.Text = " 停止:非公開ワールド。";
-                MessageBox.Show(this, result.FailureMessage, "非公開ワールド", MessageBoxButtons.OK,
+                statusLabel.Text = "Stopped: not a public world.";
+                MessageBox.Show(this, result.FailureMessage, "Not a public world", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 break;
 
             case WorldDownloadOutcome.Usage:
-                statusLabel.Text = " 停止:入力エラー。";
-                MessageBox.Show(this, result.FailureMessage, "入力エラー", MessageBoxButtons.OK,
+                statusLabel.Text = "Stopped: invalid input.";
+                MessageBox.Show(this, result.FailureMessage, "Invalid input", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 break;
 
             default:
-                statusLabel.Text = " エラー。";
-                MessageBox.Show(this, result.FailureMessage, "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                statusLabel.Text = "Error.";
+                MessageBox.Show(this, result.FailureMessage, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 break;
         }
     }

@@ -37,7 +37,7 @@ redistributable and honest. Companion reading:
 |---|---|---|
 | `src/ClusterMapDownloader` | .NET 8 class library: URL parsing, API client, metadata models, venue resolution, guest-entry flow, download plumbing, orchestration | zero external network beyond the documented endpoints |
 | `src/ClusterMapDownloader.Cli` | `cluster-map-downloader` CLI (`download`, `metadata`, `version`, `help`) | exit-code contract documented below |
-| `src/ClusterMapDownloader.Gui` | WinForms paste-a-URL GUI (`cluster-map-downloader-gui.exe`, Japanese UI) — the same pipeline plus per-file/byte progress; always runs the guest-entry flow (its own consent text does the documenting) | net8.0-windows; `EnableWindowsTargeting` keeps it buildable on non-Windows CI |
+| `src/ClusterMapDownloader.Gui` | WinForms paste-a-URL GUI (`cluster-map-downloader-gui.exe`) — the same pipeline plus per-file/byte progress; always runs the guest-entry flow with compact, user-facing messages | net8.0-windows; `EnableWindowsTargeting` keeps it buildable on non-Windows CI |
 | `tests/ClusterMapDownloader.Tests` | xUnit suite (69 tests), all synthetic (no copyrighted world data, no real keys) | see "Testing", §6 |
 | `tools/ifpsdasm-wrapper` | net8.0 front-end for IFPSLib; turns the installer's `CompiledCode.bin` into readable disassembly | NOT part of the main solution — needs `.work/third-party/IFPSTools.NET` (bootstrap-fetched) |
 | `scripts/` | PowerShell research helpers (see §4) | all outputs into git-ignored dirs |

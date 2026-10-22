@@ -71,11 +71,11 @@ It does **not** fake a completed download.
   leading bytes (`fileFormat`: `unityfs-plain` vs `unknown-probably-encrypted`)
   and hashed (`sha256`, manifest integrity column) — plain labeling only,
   never decryption.
-- A paste-a-URL Windows GUI (`cluster-map-downloader-gui.exe`, Japanese UI):
-  enter the world URL, press ダウンロード (Download), watch byte-level
-  progress; the public client-shipped identifier is auto-discovered from an
-  installed cluster client, tokens stay in memory, and refusal outcomes are
-  reported honestly (no circumvention).
+- A paste-a-URL Windows GUI (`cluster-map-downloader-gui.exe`): enter the
+  world URL, press **Download**, watch byte-level progress; the public
+  client-shipped identifier is auto-discovered from an installed cluster
+  client, tokens stay in memory, and refusal outcomes are reported
+  honestly (no circumvention).
 - Reusable PowerShell bootstrap / installer-extraction / binary-analysis
   scripts for the research workflow.
 - `ifpsdasm-wrapper`, a small .NET 8 tool that turns the Cluster installer's
@@ -151,19 +151,17 @@ pwsh .\scripts\bootstrap.ps1 -RunTests           # also run the unit test suite
 ### 2. GUI (Windows, paste-a-URL) — the quickest way
 
 `bootstrap.ps1` publishes a small WinForms GUI to
-`artifacts-local\gui\cluster-map-downloader-gui.exe` (Japanese UI). It always
-runs the explicit opt-in guest-entry flow described in section 4 — that is
-the GUI's whole purpose — with the same policies: single world, in-memory
-tokens, honest refusal handling, as-is encrypted bytes.
+`artifacts-local\gui\cluster-map-downloader-gui.exe`. It always runs the
+explicit opt-in guest-entry flow described in section 4 — that is the GUI's
+whole purpose — with the same policies: single world, in-memory tokens,
+honest refusal handling, as-is encrypted bytes.
 
 1. Launch `cluster-map-downloader-gui.exe`.
-2. Paste `https://cluster.mu/w/<WORLD_ID>`.
-3. Press **ダウンロード** (Download); progress (per-file, byte-level) and a
-   log are shown.
-4. Files land in the chosen 保存先 (output directory;
-   `<output>\<worldId>\bundles\` by default); the manifest lists
-   `fileFormat` + `sha256` per file. **保存フォルダを開く** (Open output
-   folder) opens the world directory.
+2. Paste `https://cluster.mu/w/<WORLD_ID>` into **World URL**.
+3. Press **Download**; progress (per-file, byte-level) and a log are shown.
+4. Files land in the chosen output directory (`<output>\<worldId>\bundles\`
+   by default); the manifest lists `fileFormat` + `sha256` per file.
+   **Open folder** opens the world directory.
 
 Automation/testing arguments: `cluster-map-downloader-gui.exe [url] [-o dir]
 --auto-close` pre-fills the URL, starts immediately, and (with `--auto-close`)
