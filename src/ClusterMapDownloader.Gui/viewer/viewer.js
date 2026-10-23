@@ -234,6 +234,18 @@ async function loadModel() {
         // with front-face culling they render inside-out / black. DoubleSide
         // is the pragmatic generic-model-data fix.
         material.side = THREE.DoubleSide;
+        // AssetRipper's generic export leaves materials at glTF's default
+        // metallicFactor of 1 (pure metal) with no metallicRoughness texture.
+        // A pure metal reflects only an environment map, and this viewer has
+        // none, so such materials render black and their base-color textures
+        // never show. The GLB normally gets this corrected by the convert
+        // pipeline's tidy pass, but that pass is skipped when the .NET SDK is
+        // absent at conversion time - so neutralize it here too, matching
+        // Unity's dielectric default, whether or not the GLB was tidied.
+        if (material.isMeshStandardMaterial && !material.metalnessMap && material.metalness > 0) {
+          material.metalness = 0;
+          material.needsUpdate = true;
+        }
         for (const slot of mapSlots) {
           const texture = material[slot];
           // Degraded texture slots would render as black holes; drop them so
