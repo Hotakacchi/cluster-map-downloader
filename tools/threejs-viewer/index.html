@@ -52,6 +52,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
@@ -61,12 +62,21 @@ const dropEl = document.getElementById('drop');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
+// ACES tone mapping tames the blown-out whites of the ripped albedo-only
+// materials (no baked shading is carried over, so surfaces are otherwise flat).
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 appEl.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x10141a);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x445058, 2.4));
-const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+// Image-based ambient light from a neutral room probe. The rip has no
+// lightmaps/baked GI, so without some ambient irradiance every surface reads
+// equally flat; this gives shape back to the geometry without inventing colour.
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445058, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
 sun.position.set(-30, 60, 40);
 scene.add(sun);
 const grid = new THREE.GridHelper(400, 80, 0x3a4652, 0x222b34);
