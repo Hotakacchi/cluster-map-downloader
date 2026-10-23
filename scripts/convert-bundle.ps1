@@ -30,10 +30,13 @@
        three.js render normal-less meshes unlit/black - and every material
        without a metallicRoughness texture is forced to an explicit
        metallicFactor of 0 (glTF's default metallic is 1 = pure metal, which
-       renders black without an environment map). The repairs are recorded in
-       the manifest "tidy" section; the tidier CLI is auto-published once
-       when the dotnet SDK is available, and a missing SDK is reported
-       honestly while the GLB stays exactly as exported.
+       renders black without an environment map). On top of that, exact
+       coincident duplicate subtrees (script-instanced objects such as
+       vehicles that all export stacked at the same world position) are
+       reduced to one deterministic representative each. The repairs are
+       recorded in the manifest "tidy" section; the tidier CLI is
+       auto-published once when the dotnet SDK is available, and a missing
+       SDK is reported honestly while the GLB stays exactly as exported.
     5. Deliverables are copied into <worldDir>\converted\ :
 
            converted\scene\<name>.glb    the world scene model (main output)
@@ -254,7 +257,9 @@ function Invoke-GlbTidy {
         $jsonLine = @($raw) | Where-Object { $_ -like '{*' } | Select-Object -First 1
         if (-not $jsonLine) { throw 'tidy-glb printed no JSON report line' }
         $report = $jsonLine | ConvertFrom-Json
-        $applied = ([int]$report.normals_generated_primitives -gt 0) -or ([int]$report.metallic_sanitized_materials -gt 0)
+        $applied = ([int]$report.normals_generated_primitives -gt 0) -or
+            ([int]$report.metallic_sanitized_materials -gt 0) -or
+            ([int]$report.coincident_duplicate_nodes_removed -gt 0)
         if ($applied) {
             $details = @()
             if ([int]$report.normals_generated_primitives -gt 0) {
@@ -265,18 +270,30 @@ function Invoke-GlbTidy {
                 $details += ('metallicFactor=0 for {0} material(s) without a metallicRoughness texture' -f
                     $report.metallic_sanitized_materials)
             }
+            if ([int]$report.coincident_duplicate_nodes_removed -gt 0) {
+                $details += ('removed {0} coincident duplicate node(s) in {1} group(s) ({2} triangles)' -f
+                    $report.coincident_duplicate_nodes_removed,
+                    $report.coincident_duplicate_groups,
+                    $report.coincident_duplicate_triangles_removed)
+            }
             Write-StepOk ('Tidied: {0}.' -f ($details -join '; '))
         }
         else {
-            Write-StepOk ('Tidy: {0} - nothing to fix (normals and metallic defaults already repaired).' -f (Split-Path -Leaf $GlbPath))
+            Write-StepOk ('Tidy: {0} - nothing to fix (repair passes already applied).' -f (Split-Path -Leaf $GlbPath))
         }
         return [pscustomobject]@{
-            applied                      = $applied
-            normalsGeneratedPrimitives   = $report.normals_generated_primitives
-            normalsGeneratedTriangles    = $report.normals_generated_triangles
-            normalsGeneratedVertices     = $report.normals_generated_vertices
-            skippedUnsupportedPrimitives = $report.skipped_unsupported_primitives
-            metallicSanitizedMaterials   = $report.metallic_sanitized_materials
+            applied                                  = $applied
+            normalsGeneratedPrimitives               = $report.normals_generated_primitives
+            normalsGeneratedTriangles                = $report.normals_generated_triangles
+            normalsGeneratedVertices                 = $report.normals_generated_vertices
+            skippedUnsupportedPrimitives             = $report.skipped_unsupported_primitives
+            metallicSanitizedMaterials               = $report.metallic_sanitized_materials
+            coincidentDuplicateGroups                = $report.coincident_duplicate_groups
+            coincidentDuplicateNodesRemoved          = $report.coincident_duplicate_nodes_removed
+            coincidentDuplicateTrianglesRemoved      = $report.coincident_duplicate_triangles_removed
+            coincidentDuplicateSkippedForAnimations  = $report.coincident_duplicate_skipped_for_animations
+            coincidentDuplicateSkippedForSkins       = $report.coincident_duplicate_skipped_for_skins
+            coincidentDuplicateSkippedUnsupported    = $report.coincident_duplicate_skipped_unsupported
         }
     }
     catch {
@@ -517,6 +534,9 @@ try {
             '  consumers such as three.js would render them unlit/black instead',
             'materials without a metallicRoughness texture are forced to metallic=0 (see tidy):',
             '  glTF defaults metallic to 1 and a pure metal renders black without envmaps',
+            'exact coincident duplicate subtrees are detached down to one copy each (see tidy):',
+            '  script-instanced objects (vehicles) export stacked at the same world spot and',
+            '  their coincident faces fight in the depth buffer as thin marching-ant stripes',
             'lightmaps and shader-driven shading are not carried over; walls may look flat'
         )
         rawExport   = $rawDir
@@ -547,6 +567,12 @@ Limits (honest):
     by the same tidy pass: glTF's default metallic is 1 (pure metal), which
     renders black where no environment map exists. Unity's default is
     dielectric (metallic 0), matching cluster's stylized look.
+  - Exact coincident duplicate subtrees are also detached down to one copy
+    each: script-instanced objects (vehicles) all export stacked at the same
+    world position and their coincident faces fight in the depth buffer as
+    thin marching-ant stripes. The intended per-clone placement lives in
+    cluster's scripts and cannot be recovered from the bundle, so one
+    representative per identical stack is kept.
 
 The 3D data is copyrighted by the world creators. Keep it for personal
 study/viewing; do not redistribute, publish, or reuse it. Converted files

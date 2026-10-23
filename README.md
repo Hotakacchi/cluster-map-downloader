@@ -311,10 +311,10 @@ Output lands in `output\<map name or worldId>\converted\`:
 
 | File | What it is |
 |---|---|
-| `scene\<map name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures. The scene GLB uses the world's public map name (from `<world-dir>\world-metadata.json`) when available and gets one in-place repair pass by this repository's [`GlbTidier`](docs/ARCHITECTURE.md#3-library-surface-clustermapdownloader): meshes that shipped without vertex normals receive freshly computed smooth normals (glTF consumers such as three.js render normal-less meshes unlit/black), and materials without a metallicRoughness texture are forced to metallic=0 (glTF's metallic default is 1 = pure metal, which renders black where no environment map exists); both repairs are recorded in the manifest's `tidy` section |
+| `scene\<map name>.glb` | the whole world as one glTF 2.0 model: node hierarchy, meshes, standard materials, embedded textures. The scene GLB uses the world's public map name (from `<world-dir>\world-metadata.json`) when available and gets one in-place repair pass by this repository's [`GlbTidier`](docs/ARCHITECTURE.md#3-library-surface-clustermapdownloader): meshes that shipped without vertex normals receive freshly computed smooth normals (glTF consumers such as three.js render normal-less meshes unlit/black), materials without a metallicRoughness texture are forced to metallic=0 (glTF's metallic default is 1 = pure metal, which renders black where no environment map exists), and exact coincident duplicate subtrees (script-instanced objects such as vehicles stacked at one world spot) are detached down to one deterministic representative each; all repairs are recorded in the manifest's `tidy` section |
 | `textures\` | decoded PNG textures (with `-Textures`) |
 | `full-export\` | the complete raw AssetRipper export (with `-All`) |
-| `manifest-<name>.json` | source/output `sha256` + sizes + counts + limits disclosure (incl. the `tidy` normals-repair report) |
+| `manifest-<name>.json` | source/output `sha256` + sizes + counts + limits disclosure (incl. the `tidy` repair report) |
 | `README.txt` | personal-use + limits notice |
 
 - **three.js**: inside the GUI via **Open 3D viewer** (the same page renders
@@ -336,10 +336,15 @@ Meshes that ship without vertex normals are repaired in place by GlbTidier,
 and materials without a metallicRoughness texture are forced to metallic=0
 (glTF's metallic default of 1 turns every such material into a pure metal,
 which renders black without an environment map; Unity's default is
-dielectric). Both repairs are listed in the manifest's `tidy` section, and a
-run where the repair CLI is unavailable reports the skip honestly instead.
-Encrypted bundles are never decrypted: the script magic-checks `UnityFS\0`
-first and skips anything else honestly (exit code 2).
+dielectric). A third pass also detaches exact coincident duplicate subtrees:
+script-instanced objects (vehicles) all export stacked at the same world
+position and their coincident faces fight in the depth buffer as thin
+marching-ant stripes - one deterministic representative per identical stack
+is kept (the intended per-clone placement lives in cluster's scripts and is
+not recoverable from the bundle). All repairs are listed in the manifest's
+`tidy` section, and a run where the repair CLI is unavailable reports the
+skip honestly instead. Encrypted bundles are never decrypted: the script
+magic-checks `UnityFS\0` first and skips anything else honestly (exit code 2).
 
 The converted data is **personal use only** - the 3D content's copyright
 belongs to the world creators; do not redistribute or reuse it. Converted

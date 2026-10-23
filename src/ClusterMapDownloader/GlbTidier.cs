@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -43,6 +44,29 @@ public sealed record GlbTidyResult
     /// </summary>
     public int MetallicSanitizedMaterials { get; init; }
 
+    /// <summary>
+    /// Groups of scene nodes whose whole subtree (mesh content + every
+    /// descendant) and whose exact world matrix matched another node's, i.e.
+    /// perfectly stacked duplicate copies of the same object. Only groups
+    /// from which at least one copy was detached are counted.
+    /// </summary>
+    public int CoincidentDuplicateGroups { get; init; }
+
+    /// <summary>Duplicate nodes detached from their parent (or scene roots).</summary>
+    public int CoincidentDuplicateNodesRemoved { get; init; }
+
+    /// <summary>Triangles that were only drawn by the detached copies.</summary>
+    public long CoincidentDuplicateTrianglesRemoved { get; init; }
+
+    /// <summary>Duplicate scan skipped because the file has animations (they may pin node indices).</summary>
+    public bool CoincidentDuplicateSkippedForAnimations { get; init; }
+
+    /// <summary>Duplicate scan skipped because the file has skins (joints reference node indices).</summary>
+    public bool CoincidentDuplicateSkippedForSkins { get; init; }
+
+    /// <summary>Duplicate scan skipped because a referenced accessor/addressable layout could not be resolved.</summary>
+    public bool CoincidentDuplicateSkippedUnsupported { get; init; }
+
     /// <summary>File size in bytes before the run.</summary>
     public long BytesBefore { get; init; }
 
@@ -50,7 +74,10 @@ public sealed record GlbTidyResult
     public long BytesAfter { get; init; }
 
     /// <summary>True when the file was rewritten; a run with nothing to fix writes nothing.</summary>
-    public bool Changed => NormalsGeneratedPrimitives > 0 || MetallicSanitizedMaterials > 0;
+    public bool Changed =>
+        NormalsGeneratedPrimitives > 0 ||
+        MetallicSanitizedMaterials > 0 ||
+        CoincidentDuplicateNodesRemoved > 0;
 }
 
 /// <summary>
@@ -69,11 +96,20 @@ public sealed record GlbTidyResult
 /// glTF's default metallic is 1 (pure metal); with no environment map such
 /// materials render black regardless of their base color texture.
 ///
+/// A third pass detaches exact coincident duplicate subtrees: script-driven
+/// instancing (vehicles instantiated at runtime) survives bundle export as
+/// several node copies with identical content stacked at the same world
+/// position, and their coincident faces fight in the depth buffer. One
+/// deterministic representative per copy group is kept. See
+/// RemoveCoincidentDuplicates for the exact matching rule.
+///
 /// Deliberately conservative:
 ///  - triangles primitives only (MODE 4); anything else is counted in
 ///    SkippedUnsupportedPrimitives and left exactly as exported,
 ///  - only FLOAT POSITIONs are supported (AssetRipper's own output),
 ///  - meshes that already have normals are never touched,
+///  - duplicate copies must match inside exact double precision (any world
+///    drift, however small, keeps the node) and inside whole-subtree content,
 ///  - a run with nothing to fix does not rewrite the file at all, so a second
 ///    run is byte-identical (idempotent),
 ///  - structural failures throw GlbTidyException and leave the file intact;
@@ -102,6 +138,11 @@ public static class GlbTidier
         var bytes = File.ReadAllBytes(path);
         var before = (long)bytes.Length;
         var (root, originalBin) = ParseGlb(bytes);
+
+        // Duplicate-subtree pass runs FIRST so its content digests resolve
+        // inside the BIN chunk exactly as parsed here; the normals pass below
+        // appends accessors beyond that range and would break the reads.
+        var duplicates = RemoveCoincidentDuplicates(root, originalBin);
 
         var primitivesFixed = 0;
         var trianglesFixed = 0L;
@@ -252,12 +293,15 @@ public static class GlbTidier
             }
         }
 
-        if (primitivesFixed == 0 && metalSanitized == 0)
+        if (primitivesFixed == 0 && metalSanitized == 0 && duplicates.NodesRemoved == 0)
         {
             return new GlbTidyResult
             {
                 File = path,
                 SkippedUnsupportedPrimitives = skippedUnsupported,
+                CoincidentDuplicateSkippedForAnimations = duplicates.SkippedForAnimations,
+                CoincidentDuplicateSkippedForSkins = duplicates.SkippedForSkins,
+                CoincidentDuplicateSkippedUnsupported = duplicates.SkippedUnsupported,
                 BytesBefore = before,
                 BytesAfter = before,
             };
@@ -288,12 +332,797 @@ public static class GlbTidier
             NormalsGeneratedVertices = verticesFixed,
             SkippedUnsupportedPrimitives = skippedUnsupported,
             MetallicSanitizedMaterials = metalSanitized,
+            CoincidentDuplicateGroups = duplicates.Groups,
+            CoincidentDuplicateNodesRemoved = duplicates.NodesRemoved,
+            CoincidentDuplicateTrianglesRemoved = duplicates.TrianglesRemoved,
+            CoincidentDuplicateSkippedForAnimations = duplicates.SkippedForAnimations,
+            CoincidentDuplicateSkippedForSkins = duplicates.SkippedForSkins,
+            CoincidentDuplicateSkippedUnsupported = duplicates.SkippedUnsupported,
             BytesBefore = before,
             BytesAfter = bytesAfter,
         };
     }
 
     private sealed record NormalFix(byte[] Blob, int VertexCount, long Triangles, float[] Min, float[] Max);
+
+    // ---------------------------------------------------------------------
+    // Pass 3: exact coincident duplicate subtrees
+    // ---------------------------------------------------------------------
+    // Static scenes rebuilt by AssetRipper can contain the same object twice:
+    // cluster.mu scripts instance vehicles at runtime, the placement offsets
+    // live in code (not in the bundle), so every clone exports at the origin
+    // of its parent chain and the copies stack perfectly - their coincident
+    // faces fight in the depth buffer and read as thin marching-ant stripes.
+    //
+    // Matching rule (deliberately strict):
+    //  - nodes are grouped by key = exact world matrix bits + a content
+    //    digest of the whole subtree: local TRS/matrix, the mesh primitive
+    //    content (accessor buffer bytes hashed with count/stride/type, plus
+    //    mode and material raw JSON) and the ordered digests of every child,
+    //  - digests are content-based only, so buffer offsets or accessor and
+    //    material numbers that differ between re-written copies still match,
+    //    while names (which differ freely) are ignored on purpose,
+    //  - the world matrix must equal within exact double bits - any drift,
+    //    however small, keeps the node (observed duplicates were 0.00 mm),
+    //  - groups are processed shallow-first; every non-kept member is
+    //    detached from its parent's children array (or the scene roots) with
+    //    the lowest node index kept as the deterministic representative.
+    //
+    // Safety: node objects stay in the nodes array unreferenced (legal glTF),
+    // no buffer bytes change, and a run whose remaining copies no longer
+    // match finds nothing and rewrites nothing (idempotent). The scan is
+    // skipped - and reported honestly - when animations or skins are present
+    // (they may pin node indices) or when any referenced accessor/view layout
+    // cannot be resolved inside the BIN chunk. Detaching a copy can expose a
+    // further identical pair (for example a wrapper whose only held copy got
+    // removed turns into another identical empty node), so the scan repeats
+    // rounds inside one TidyFile run until no group remains, keeping a single
+    // conversion run convergent.
+    private sealed record DuplicateScan(
+        int Groups,
+        int NodesRemoved,
+        long TrianglesRemoved,
+        bool SkippedForAnimations,
+        bool SkippedForSkins,
+        bool SkippedUnsupported);
+
+    /// <summary>
+    /// Safety cap for the internal convergence loop: removing copies can
+    /// expose further pairs (a parent whose only child was a redundant copy
+    /// turns into another redundant copy), so the scan repeats until no group
+    /// remains. 64 rounds far exceed any legitimate node-chain depth.
+    /// </summary>
+    private const int MaxDuplicateScanRounds = 64;
+
+    private static DuplicateScan RemoveCoincidentDuplicates(JsonObject root, byte[] bin)
+    {
+        if (root["animations"] is JsonArray animations && animations.Count > 0)
+        {
+            return new DuplicateScan(0, 0, 0, true, false, false);
+        }
+
+        if (root["skins"] is JsonArray skins && skins.Count > 0)
+        {
+            return new DuplicateScan(0, 0, 0, false, true, false);
+        }
+
+        var total = new DuplicateScan(0, 0, 0, false, false, false);
+        for (var round = 0; round < MaxDuplicateScanRounds; round++)
+        {
+            var roundScan = ScanCoincidentDuplicatesOnce(root, bin);
+            total = total with
+            {
+                Groups = total.Groups + roundScan.Groups,
+                NodesRemoved = total.NodesRemoved + roundScan.NodesRemoved,
+                TrianglesRemoved = total.TrianglesRemoved + roundScan.TrianglesRemoved,
+                SkippedForAnimations = total.SkippedForAnimations || roundScan.SkippedForAnimations,
+                SkippedForSkins = total.SkippedForSkins || roundScan.SkippedForSkins,
+                SkippedUnsupported = total.SkippedUnsupported || roundScan.SkippedUnsupported,
+            };
+            if (roundScan.NodesRemoved == 0)
+            {
+                break;
+            }
+        }
+
+        return total;
+    }
+
+    private static DuplicateScan ScanCoincidentDuplicatesOnce(JsonObject root, byte[] bin)
+    {
+        if (root["nodes"] is not JsonArray nodesArray ||
+            nodesArray.Count == 0 ||
+            root["scenes"] is not JsonArray scenesArray ||
+            root["meshes"] is not JsonArray meshesArray ||
+            root["accessors"] is not JsonArray accessorsArray ||
+            root["bufferViews"] is not JsonArray bufferViewsArray)
+        {
+            return new DuplicateScan(0, 0, 0, false, false, false);
+        }
+
+        var nodeCount = nodesArray.Count;
+        var meshCount = meshesArray.Count;
+        var accCount = accessorsArray.Count;
+
+        var visited = new bool[nodeCount];
+        var world = new double[nodeCount][];
+        var digest = new string?[nodeCount];
+        var subtreeTriangles = new long[nodeCount];
+        var depthOf = new int[nodeCount];
+        var parentLists = new List<int>[nodeCount];
+        var sceneOwners = new List<int>[nodeCount];
+        for (var i = 0; i < nodeCount; i++)
+        {
+            parentLists[i] = new List<int>();
+            sceneOwners[i] = new List<int>();
+        }
+
+        var meshDigest = new string?[meshCount];
+        var meshTriangles = new long[meshCount];
+        var meshProbed = new bool[meshCount];
+        var meshBroken = new bool[meshCount];
+
+        var accDigest = new string?[accCount];
+        var accProbed = new bool[accCount];
+        var accBroken = new bool[accCount];
+
+        var unsupported = false;
+
+        bool TryAccessorDigest(int accessorIndex, out string accessorDigestText)
+        {
+            accessorDigestText = "";
+            if (accessorIndex < 0 || accessorIndex >= accCount)
+            {
+                return false;
+            }
+
+            if (accProbed[accessorIndex])
+            {
+                if (accBroken[accessorIndex])
+                {
+                    return false;
+                }
+
+                accessorDigestText = accDigest[accessorIndex]!;
+                return true;
+            }
+
+            accProbed[accessorIndex] = true;
+            if (accessorsArray[accessorIndex] is not JsonObject accessor)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            var viewIndex = ReadIndexInt(accessor["bufferView"]);
+            if (viewIndex < 0 ||
+                viewIndex >= bufferViewsArray.Count ||
+                bufferViewsArray[viewIndex] is not JsonObject view)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            var componentType = ReadIndexInt(accessor["componentType"]);
+            var componentSize = componentType switch
+            {
+                5120 => 1, 5121 => 1, 5122 => 2, 5123 => 2, 5125 => 4, 5126 => 4,
+                _ => 0,
+            };
+            var componentCount = ReadString(accessor["type"]) switch
+            {
+                "SCALAR" => 1,
+                "VEC2" => 2,
+                "VEC3" => 3,
+                "VEC4" => 4,
+                "MAT2" => 4,
+                "MAT3" => 9,
+                "MAT4" => 16,
+                _ => 0,
+            };
+            var count = ReadIndexInt(accessor["count"]);
+            if (componentSize == 0 || componentCount == 0 || count < 0)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            // GLB files keep the vertex data in the first buffer only.
+            if (ReadIndexInt(view["buffer"]) != 0)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            var viewOffset = ReadOffset(view["byteOffset"]);
+            var viewLength = ReadRequiredNonNegative(view["byteLength"]);
+            var stride = ReadStride(view["byteStride"]);
+            var dataOffset = ReadOffset(accessor["byteOffset"]);
+            if (viewOffset < 0 || viewLength <= 0 || stride < 0 || dataOffset < 0)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            var elementSize = componentSize * componentCount;
+            var effectiveStride = stride == 0 ? elementSize : stride;
+            if (count == 0)
+            {
+                accessorDigestText = accDigest[accessorIndex] =
+                    "0/" + effectiveStride + "/" + componentType + "/" + ReadString(accessor["type"]) + "/empty";
+                return true;
+            }
+
+            var dataStart = viewOffset + dataOffset;
+            var dataLength = (long)(count - 1) * effectiveStride + elementSize;
+            if (dataStart < 0 || dataStart + dataLength > bin.Length)
+            {
+                accBroken[accessorIndex] = true;
+                return false;
+            }
+
+            var shaText = Convert.ToHexString(
+                SHA256.HashData(bin.AsSpan((int)dataStart, (int)dataLength)));
+            accessorDigestText = accDigest[accessorIndex] =
+                count + "/" + effectiveStride + "/" + componentType + "/" +
+                ReadString(accessor["type"]) + "/" + shaText;
+            return true;
+        }
+
+        bool TryMeshInfo(int meshIndex, out string meshDigestText, out long meshTriangleCount)
+        {
+            meshDigestText = "";
+            meshTriangleCount = 0;
+            if (meshIndex < 0 || meshIndex >= meshCount)
+            {
+                return false;
+            }
+
+            if (meshProbed[meshIndex])
+            {
+                if (meshBroken[meshIndex])
+                {
+                    return false;
+                }
+
+                meshDigestText = meshDigest[meshIndex]!;
+                meshTriangleCount = meshTriangles[meshIndex];
+                return true;
+            }
+
+            meshProbed[meshIndex] = true;
+            if (meshesArray[meshIndex] is not JsonObject mesh ||
+                mesh["primitives"] is not JsonArray prims ||
+                prims.Count == 0)
+            {
+                meshBroken[meshIndex] = true;
+                return false;
+            }
+
+            var meshBuilder = new StringBuilder();
+            var totalTriangles = 0L;
+            foreach (var primNode in prims)
+            {
+                if (primNode is not JsonObject prim)
+                {
+                    meshBroken[meshIndex] = true;
+                    return false;
+                }
+
+                var mode = ReadIndexInt(prim["mode"]);
+                if (mode < 0)
+                {
+                    mode = ModeTriangles;
+                }
+
+                meshBuilder.Append("|m").Append(mode);
+
+                if (prim["material"] is not null)
+                {
+                    var materialIndex = ReadIndexInt(prim["material"]);
+                    if (materialIndex < 0 ||
+                        root["materials"] is not JsonArray materials ||
+                        materialIndex >= materials.Count ||
+                        materials[materialIndex] is not JsonObject material)
+                    {
+                        meshBroken[meshIndex] = true;
+                        return false;
+                    }
+
+                    // Raw material JSON: copies that share the same material
+                    // content match even when the material index differs.
+                    meshBuilder.Append("|mat=").Append(material.ToJsonString());
+                }
+                else
+                {
+                    meshBuilder.Append("|mat=-");
+                }
+
+                if (prim["attributes"] is not JsonObject attributes || attributes.Count == 0)
+                {
+                    meshBroken[meshIndex] = true;
+                    return false;
+                }
+
+                foreach (var attribute in attributes)
+                {
+                    var attributeAccessor = ReadIndexInt(attribute.Value);
+                    if (attributeAccessor < 0 ||
+                        !TryAccessorDigest(attributeAccessor, out var attributeDigest))
+                    {
+                        meshBroken[meshIndex] = true;
+                        return false;
+                    }
+
+                    meshBuilder.Append("|a:").Append(attribute.Key).Append('=').Append(attributeDigest);
+                }
+
+                if (prim["indices"] is not null)
+                {
+                    var indexAccessor = ReadIndexInt(prim["indices"]);
+                    if (indexAccessor < 0 ||
+                        !TryAccessorDigest(indexAccessor, out var indexDigest))
+                    {
+                        meshBroken[meshIndex] = true;
+                        return false;
+                    }
+
+                    meshBuilder.Append("|ix=").Append(indexDigest);
+                    if (mode == ModeTriangles)
+                    {
+                        if (accessorsArray[indexAccessor] is not JsonObject indicesObject)
+                        {
+                            meshBroken[meshIndex] = true;
+                            return false;
+                        }
+
+                        var entries = ReadIndexInt(indicesObject["count"]);
+                        if (entries < 0 || entries % 3 != 0)
+                        {
+                            meshBroken[meshIndex] = true;
+                            return false;
+                        }
+
+                        totalTriangles += entries / 3;
+                    }
+                }
+
+                foreach (var property in prim)
+                {
+                    if (property.Key is "attributes" or "indices" or "mode" or "material")
+                    {
+                        continue;
+                    }
+
+                    meshBuilder
+                        .Append("|p:").Append(property.Key)
+                        .Append('=').Append(property.Value?.ToJsonString() ?? "null");
+                }
+            }
+
+            meshDigest[meshIndex] = meshBuilder.ToString();
+            meshTriangles[meshIndex] = totalTriangles;
+            meshDigestText = meshBuilder.ToString();
+            meshTriangleCount = totalTriangles;
+            return true;
+        }
+
+        bool Visit(int nodeIndex, double[] parentWorld, int level)
+        {
+            if (unsupported)
+            {
+                return false;
+            }
+
+            if (nodeIndex < 0 || nodeIndex >= nodeCount || visited[nodeIndex])
+            {
+                unsupported = true; // out of range, cycle or second reference
+                return false;
+            }
+
+            visited[nodeIndex] = true;
+            depthOf[nodeIndex] = level;
+            if (nodesArray[nodeIndex] is not JsonObject node ||
+                !TryLocalMatrix(node, out var local))
+            {
+                unsupported = true;
+                return false;
+            }
+
+            var nodeWorld = MultiplyMatrix(parentWorld, local);
+            world[nodeIndex] = nodeWorld;
+
+            // Content digest: own mesh primitives first, then every child's
+            // digest in order, so whole subtrees can be compared as text.
+            var contentDigest = "-";
+            if (node["mesh"] is not null)
+            {
+                var meshIndex = ReadIndexInt(node["mesh"]);
+                if (!TryMeshInfo(meshIndex, out var ownMeshDigest, out var ownTriangles))
+                {
+                    unsupported = true;
+                    return false;
+                }
+
+                contentDigest = ownMeshDigest;
+                subtreeTriangles[nodeIndex] = ownTriangles;
+            }
+
+            // Other node properties that affect rendering (camera, weights,
+            // extensions, extras) join the digest; name is the one property
+            // copies may freely differ in, so it is excluded on purpose.
+            var extrasDigest = "";
+            foreach (var property in node)
+            {
+                if (property.Key is "name" or "children" or "mesh" or
+                    "translation" or "rotation" or "scale" or "matrix")
+                {
+                    continue;
+                }
+
+                extrasDigest += property.Key + "=" +
+                    (property.Value?.ToJsonString() ?? "null") + ";";
+            }
+
+            if (node["children"] is JsonArray childrenList && childrenList.Count > 0)
+            {
+                // Register every first, then walk: equal digests come from
+                // equal subtree content, so the visit order does not matter,
+                // but the parent map must be complete before grouping.
+                foreach (var childNode in childrenList)
+                {
+                    var child = ReadIndexInt(childNode);
+                    if (child < 0 || child >= nodeCount || visited[child])
+                    {
+                        unsupported = true;
+                        return false;
+                    }
+
+                    parentLists[child].Add(nodeIndex);
+                }
+
+                foreach (var childNode in childrenList)
+                {
+                    var child = ReadIndexInt(childNode);
+                    if (!Visit(child, nodeWorld, level + 1))
+                    {
+                        return false;
+                    }
+
+                    contentDigest += "|" + digest[child];
+                    subtreeTriangles[nodeIndex] += subtreeTriangles[child];
+                }
+            }
+
+            var nodeBuilder = new StringBuilder(96);
+            nodeBuilder.Append("L");
+            foreach (var value in local)
+            {
+                nodeBuilder.Append(BitConverter.DoubleToInt64Bits(value).ToString("X16"));
+            }
+
+            nodeBuilder.Append("M").Append(contentDigest);
+            nodeBuilder.Append("E").Append(extrasDigest);
+            digest[nodeIndex] = nodeBuilder.ToString();
+            return true;
+        }
+
+        var identity = new double[16];
+        identity[0] = identity[5] = identity[10] = identity[15] = 1.0;
+        for (var sceneIndex = 0; sceneIndex < scenesArray.Count && !unsupported; sceneIndex++)
+        {
+            if (scenesArray[sceneIndex] is not JsonObject scene ||
+                scene["nodes"] is not JsonArray sceneRoots)
+            {
+                continue;
+            }
+
+            foreach (var rootNode in sceneRoots)
+            {
+                if (unsupported)
+                {
+                    break;
+                }
+
+                var rootIndex = ReadIndexInt(rootNode);
+                if (rootIndex < 0 || rootIndex >= nodeCount)
+                {
+                    unsupported = true;
+                    break;
+                }
+
+                sceneOwners[rootIndex].Add(sceneIndex);
+                Visit(rootIndex, identity, 0);
+            }
+        }
+
+        if (unsupported)
+        {
+            return new DuplicateScan(0, 0, 0, false, false, true);
+        }
+
+        // Group visited nodes by (exact world matrix bits + subtree digest).
+        var buckets = new Dictionary<string, List<int>>();
+        for (var i = 0; i < nodeCount; i++)
+        {
+            if (!visited[i])
+            {
+                continue;
+            }
+
+            var key = WorldKey(world[i]) + "!" + digest[i];
+            if (!buckets.TryGetValue(key, out var bucket))
+            {
+                buckets[key] = bucket = new List<int>();
+            }
+
+            bucket.Add(i);
+        }
+
+        var clusters = buckets.Values.Where(bucket => bucket.Count >= 2).ToList();
+        // Shallow-first (then lowest index): acting on a top-level copy pair
+        // renders deeper pairs inside the removed subtrees moot, which both
+        // keeps the triangle accounting non-overlapping and deterministic.
+        clusters.Sort((left, right) =>
+        {
+            var leftDepth = left.Min(member => depthOf[member]);
+            var rightDepth = right.Min(member => depthOf[member]);
+            if (leftDepth != rightDepth)
+            {
+                return leftDepth.CompareTo(rightDepth);
+            }
+
+            return left.Min().CompareTo(right.Min());
+        });
+
+        var removed = new HashSet<int>();
+        var actedGroups = 0;
+        var nodesRemoved = 0;
+        long trianglesRemoved = 0;
+
+        bool CoveredByRemoved(int nodeIndex)
+        {
+            var cursor = nodeIndex;
+            while (true)
+            {
+                if (removed.Contains(cursor))
+                {
+                    return true;
+                }
+
+                var parents = parentLists[cursor];
+                if (parents.Count == 0)
+                {
+                    return false;
+                }
+
+                cursor = parents[0];
+            }
+        }
+
+        foreach (var cluster in clusters)
+        {
+            var active = cluster.Where(member => !CoveredByRemoved(member)).ToList();
+            if (active.Count < 2)
+            {
+                continue;
+            }
+
+            var keep = active.Min();
+            foreach (var member in active)
+            {
+                if (member == keep)
+                {
+                    continue;
+                }
+
+                foreach (var holder in parentLists[member])
+                {
+                    if (nodesArray[holder] is JsonObject holderNode &&
+                        holderNode["children"] is JsonArray children)
+                    {
+                        for (var k = children.Count - 1; k >= 0; k--)
+                        {
+                            if (ReadIndexInt(children[k]) == member)
+                            {
+                                children.RemoveAt(k);
+                            }
+                        }
+                    }
+                }
+
+                foreach (var sceneIndex in sceneOwners[member])
+                {
+                    if (scenesArray[sceneIndex] is JsonObject sceneNode &&
+                        sceneNode["nodes"] is JsonArray sceneRoots)
+                    {
+                        for (var k = sceneRoots.Count - 1; k >= 0; k--)
+                        {
+                            if (ReadIndexInt(sceneRoots[k]) == member)
+                            {
+                                sceneRoots.RemoveAt(k);
+                            }
+                        }
+                    }
+                }
+
+                removed.Add(member);
+                nodesRemoved++;
+                trianglesRemoved += subtreeTriangles[member];
+            }
+
+            actedGroups++;
+        }
+
+        return new DuplicateScan(actedGroups, nodesRemoved, trianglesRemoved, false, false, false);
+    }
+
+    private static string WorldKey(double[] matrix)
+    {
+        var builder = new StringBuilder(160);
+        foreach (var value in matrix)
+        {
+            builder.Append(BitConverter.DoubleToInt64Bits(value).ToString("X16"));
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Reads the node's local transform into a column-major 4x4 matrix:
+    /// an explicit glTF "matrix", or TRS composed as translation*rotation*scale.
+    /// </summary>
+    private static bool TryLocalMatrix(JsonObject node, out double[] matrix)
+    {
+        if (node["matrix"] is JsonArray matrixArray)
+        {
+            var explicitMatrix = ReadVectorOfLength(matrixArray, 16);
+            if (explicitMatrix is null)
+            {
+                matrix = Array.Empty<double>();
+                return false;
+            }
+
+            matrix = explicitMatrix;
+            return true;
+        }
+
+        var translation = new[] { 0.0, 0.0, 0.0 };
+        var quaternion = new[] { 0.0, 0.0, 0.0, 1.0 };
+        var scale = new[] { 1.0, 1.0, 1.0 };
+        if (node["translation"] is not null)
+        {
+            var parsed = ReadVectorOfLength(node["translation"], 3);
+            if (parsed is null)
+            {
+                matrix = Array.Empty<double>();
+                return false;
+            }
+
+            translation = parsed;
+        }
+
+        if (node["rotation"] is not null)
+        {
+            var parsed = ReadVectorOfLength(node["rotation"], 4);
+            if (parsed is null)
+            {
+                matrix = Array.Empty<double>();
+                return false;
+            }
+
+            quaternion = parsed;
+        }
+
+        if (node["scale"] is not null)
+        {
+            var parsed = ReadVectorOfLength(node["scale"], 3);
+            if (parsed is null)
+            {
+                matrix = Array.Empty<double>();
+                return false;
+            }
+
+            scale = parsed;
+        }
+
+        // Column-major TRS composition. The quaternion must be normalised for
+        // the rotation matrix to stay orthonormal; exporters already ship it
+        // normalised, and a renormalisation makes equal inputs hash equal.
+        var x = quaternion[0];
+        var y = quaternion[1];
+        var z = quaternion[2];
+        var w = quaternion[3];
+        var norm = Math.Sqrt(x * x + y * y + z * z + w * w);
+        if (norm <= 0.0)
+        {
+            matrix = Array.Empty<double>();
+            return false;
+        }
+
+        x /= norm;
+        y /= norm;
+        z /= norm;
+        w /= norm;
+        var xy2 = 2.0 * x * y;
+        var yz2 = 2.0 * y * z;
+        var zx2 = 2.0 * z * x;
+        var wx2 = 2.0 * w * x;
+        var wy2 = 2.0 * w * y;
+        var wz2 = 2.0 * w * z;
+        var xx2 = 2.0 * x * x;
+        var yy2 = 2.0 * y * y;
+        var zz2 = 2.0 * z * z;
+
+        var local = new double[16];
+        local[0] = 1.0 - (yy2 + zz2);
+        local[1] = xy2 + wz2;
+        local[2] = zx2 - wy2;
+        local[4] = xy2 - wz2;
+        local[5] = 1.0 - (xx2 + zz2);
+        local[6] = yz2 + wx2;
+        local[8] = zx2 + wy2;
+        local[9] = yz2 - wx2;
+        local[10] = 1.0 - (xx2 + yy2);
+        local[15] = 1.0;
+
+        // Scale the three basis columns (column-major); the translation
+        // column stays pure translation.
+        local[0] *= scale[0];
+        local[1] *= scale[0];
+        local[2] *= scale[0];
+        local[4] *= scale[1];
+        local[5] *= scale[1];
+        local[6] *= scale[1];
+        local[8] *= scale[2];
+        local[9] *= scale[2];
+        local[10] *= scale[2];
+        local[12] = translation[0];
+        local[13] = translation[1];
+        local[14] = translation[2];
+        matrix = local;
+        return true;
+    }
+
+    private static double[]? ReadVectorOfLength(JsonNode? node, int length)
+    {
+        if (node is not JsonArray array || array.Count != length)
+        {
+            return null;
+        }
+
+        var parsed = new double[length];
+        for (var i = 0; i < length; i++)
+        {
+            if (array[i] is not JsonValue value || !value.TryGetValue<double>(out parsed[i]))
+            {
+                return null;
+            }
+        }
+
+        return parsed;
+    }
+
+    /// <summary>Column-major 4x4 multiply: result = a * b.</summary>
+    private static double[] MultiplyMatrix(double[] a, double[] b)
+    {
+        var result = new double[16];
+        for (var column = 0; column < 4; column++)
+        {
+            for (var row = 0; row < 4; row++)
+            {
+                var sum = 0.0;
+                for (var k = 0; k < 4; k++)
+                {
+                    sum += a[k * 4 + row] * b[column * 4 + k];
+                }
+
+                result[column * 4 + row] = sum;
+            }
+        }
+
+        return result;
+    }
 
     /// <summary>Walks the GLB container; returns the JSON root plus the (optional) BIN data.</summary>
     private static (JsonObject Root, byte[] Bin) ParseGlb(byte[] bytes)

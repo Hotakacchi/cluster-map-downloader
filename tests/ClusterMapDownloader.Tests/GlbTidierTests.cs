@@ -11,7 +11,9 @@ namespace ClusterMapDownloader.Tests;
 /// normals generation for indexed/non-indexed triangle primitives, correct
 /// handling of byte-strided POSITION, honest skips (unsupported data shapes)
 /// that leave the file byte-identical, byte-identical idempotency for
-/// nothing-to-fix runs, and loud failures on corrupt containers.
+/// nothing-to-fix runs, loud failures on corrupt containers, and the
+/// coincident-duplicate-subtree pass (removals, conservative keeps, honest
+/// skips for animations/skins).
 /// </summary>
 public class GlbTidierTests
 {
@@ -657,6 +659,542 @@ public class GlbTidierTests
             File.WriteAllBytes(path, [0x12, 0x34, 0xAB, 0xCD, 0x00, 0x01, 0x02, 0x03]);
 
             Assert.Throws<GlbTidyException>(() => GlbTidier.TidyFile(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Scene-graph fixtures for the coincident-duplicate-subtree tests
+    // ------------------------------------------------------------------
+
+    /// <summary>Empty scene-graph fixture with all GLB skeleton arrays.</summary>
+    private static (JsonObject Root, MemoryStream Bin) NewSceneFixture()
+    {
+        var bin = new MemoryStream();
+        var root = new JsonObject
+        {
+            ["asset"] = new JsonObject { ["version"] = "2.0" },
+            ["scene"] = 0,
+            ["scenes"] = new JsonArray
+            {
+                new JsonObject { ["nodes"] = new JsonArray() },
+            },
+            ["nodes"] = new JsonArray(),
+            ["meshes"] = new JsonArray(),
+            ["accessors"] = new JsonArray(),
+            ["bufferViews"] = new JsonArray(),
+            ["buffers"] = new JsonArray
+            {
+                new JsonObject { ["byteLength"] = 0L },
+            },
+        };
+        return (root, bin);
+    }
+
+    /// <summary>
+    /// Appends one fixed-triangle mesh (positions with the `jitter` offset
+    /// added to every component, (0,1,0) normals, ushort indices). Meshes
+    /// added with the same `jitter` have byte-identical primitive content but
+    /// occupy independent accessors/views, mirroring re-written export copies.
+    /// Returns the mesh index.
+    /// </summary>
+    private static int AddTriangleMesh(JsonObject root, MemoryStream bin, float jitter)
+    {
+        var bufferViews = (JsonArray)root["bufferViews"]!;
+        var accessors = (JsonArray)root["accessors"]!;
+        var meshes = (JsonArray)root["meshes"]!;
+
+        var positionsOffset = (int)bin.Length;
+        float[] positions =
+        [
+            0f + jitter, 0f + jitter, 0f + jitter,
+            1f + jitter, 0f + jitter, 0f + jitter,
+            0f + jitter, 1f + jitter, 0f + jitter,
+        ];
+        foreach (var value in positions)
+        {
+            WriteFloat(bin, value);
+        }
+
+        var normalsOffset = (int)bin.Length;
+        for (var vertex = 0; vertex < 3; vertex++)
+        {
+            WriteFloat(bin, 0f);
+            WriteFloat(bin, 1f);
+            WriteFloat(bin, 0f);
+        }
+
+        var indicesOffset = (int)bin.Length;
+        WriteUShort(bin, 0);
+        WriteUShort(bin, 1);
+        WriteUShort(bin, 2);
+        while (bin.Length % 4 != 0)
+        {
+            bin.WriteByte(0x00); // keep the next mesh's float data 4-byte aligned
+        }
+
+        bufferViews.Add(new JsonObject { ["buffer"] = 0, ["byteOffset"] = positionsOffset, ["byteLength"] = 36 });
+        bufferViews.Add(new JsonObject { ["buffer"] = 0, ["byteOffset"] = normalsOffset, ["byteLength"] = 36 });
+        bufferViews.Add(new JsonObject { ["buffer"] = 0, ["byteOffset"] = indicesOffset, ["byteLength"] = 6 });
+        accessors.Add(new JsonObject
+        {
+            ["bufferView"] = bufferViews.Count - 3,
+            ["componentType"] = ComponentFloat,
+            ["count"] = 3,
+            ["type"] = "VEC3",
+        });
+        accessors.Add(new JsonObject
+        {
+            ["bufferView"] = bufferViews.Count - 2,
+            ["componentType"] = ComponentFloat,
+            ["count"] = 3,
+            ["type"] = "VEC3",
+        });
+        accessors.Add(new JsonObject
+        {
+            ["bufferView"] = bufferViews.Count - 1,
+            ["componentType"] = ComponentUnsignedShort,
+            ["count"] = 3,
+            ["type"] = "SCALAR",
+        });
+        meshes.Add(new JsonObject
+        {
+            ["primitives"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["attributes"] = new JsonObject
+                    {
+                        ["POSITION"] = accessors.Count - 3,
+                        ["NORMAL"] = accessors.Count - 2,
+                    },
+                    ["indices"] = accessors.Count - 1,
+                },
+            },
+        });
+        ((JsonObject)((JsonArray)root["buffers"]!)[0]!)["byteLength"] = bin.Length;
+        return meshes.Count - 1;
+    }
+
+    /// <summary>Appends a node (optional mesh, translation, name); returns its index.</summary>
+    private static int AddNode(JsonObject root, int? mesh, double tx, double ty, double tz, string name)
+    {
+        var nodes = (JsonArray)root["nodes"]!;
+        var node = new JsonObject { ["name"] = name };
+        node["translation"] = new JsonArray(tx, ty, tz);
+        if (mesh is int meshIndex)
+        {
+            node["mesh"] = meshIndex;
+        }
+
+        nodes.Add(node);
+        return nodes.Count - 1;
+    }
+
+    private static void AddSceneRoot(JsonObject root, int nodeIndex)
+    {
+        ((JsonObject)((JsonArray)root["scenes"]!)[0]!)["nodes"]!.AsArray().Add(nodeIndex);
+    }
+
+    private static void AttachChild(JsonObject root, int parentIndex, int childIndex)
+    {
+        var parent = (JsonObject)((JsonArray)root["nodes"]!)[parentIndex]!;
+        if (parent["children"] is not JsonArray children)
+        {
+            children = new JsonArray();
+            parent["children"] = children;
+        }
+
+        children.Add(childIndex);
+    }
+
+    [Fact]
+    public void Coincident_duplicate_subtrees_are_removed_keeping_lowest_index()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f); // byte-identical content
+            var meshC = AddTriangleMesh(root, bin, 0.75f); // different content
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "Helicopter_2");
+            var nodeB = AddNode(root, meshB, 10.0, 0.0, 0.0, "Helicopter");
+            var nodeC = AddNode(root, meshC, 10.0, 0.0, 0.0, "Other");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            AddSceneRoot(root, nodeC);
+            var path = WriteGlb(dir, "duplicate.glb", root, bin.ToArray());
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(1, report.CoincidentDuplicateGroups);
+            Assert.Equal(1, report.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(1, report.CoincidentDuplicateTrianglesRemoved);
+            Assert.False(report.CoincidentDuplicateSkippedForAnimations);
+            Assert.False(report.CoincidentDuplicateSkippedForSkins);
+            Assert.False(report.CoincidentDuplicateSkippedUnsupported);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var sceneRoots = Assert.IsType<JsonObject>(
+                Assert.IsType<JsonArray>(rootBack["scenes"])[0])["nodes"];
+            Assert.NotNull(sceneRoots);
+            Assert.Equal(2, sceneRoots.AsArray().Count);
+            Assert.Equal(nodeA, sceneRoots.AsArray()[0]!.GetValue<int>());
+            Assert.Equal(nodeC, sceneRoots.AsArray()[1]!.GetValue<int>());
+            // removed node objects stay in the nodes array, now unreferenced
+            Assert.Equal(3, Assert.IsType<JsonArray>(rootBack["nodes"]).Count);
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Different_world_transforms_are_kept_untouched()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f);
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, meshB, 11.0, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            var path = WriteGlb(dir, "different-world.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.Equal(0, report.CoincidentDuplicateGroups);
+            Assert.Equal(0, report.CoincidentDuplicateNodesRemoved);
+            Assert.False(report.CoincidentDuplicateSkippedUnsupported);
+            Assert.Equal(before, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void One_millimetre_world_drift_is_kept_untouched()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f);
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, meshB, 10.001, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            var path = WriteGlb(dir, "drift.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.Equal(0, report.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(before, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Copies_sharing_one_mesh_index_are_removed_too()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var mesh = AddTriangleMesh(root, bin, 0f); // both nodes reference mesh 0
+            var nodeA = AddNode(root, mesh, 5.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, mesh, 5.0, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            var path = WriteGlb(dir, "shared-mesh.glb", root, bin.ToArray());
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(1, report.CoincidentDuplicateGroups);
+            Assert.Equal(1, report.CoincidentDuplicateNodesRemoved);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var sceneRoots = Assert.IsType<JsonObject>(
+                Assert.IsType<JsonArray>(rootBack["scenes"])[0])["nodes"];
+            Assert.NotNull(sceneRoots);
+            Assert.Single(sceneRoots.AsArray());
+            Assert.Equal(nodeA, sceneRoots.AsArray()[0]!.GetValue<int>());
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Nested_duplicate_subtrees_cut_once_at_the_top()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f); // identical child mesh
+            var meshC = AddTriangleMesh(root, bin, 2f); // unrelated extra root
+            var parentA = AddNode(root, null, 0.0, 0.0, 0.0, "P1");
+            var childA = AddNode(root, meshA, 0.0, 2.0, 0.0, "A");
+            AttachChild(root, parentA, childA);
+            var parentB = AddNode(root, null, 0.0, 0.0, 0.0, "P2");
+            var childB = AddNode(root, meshB, 0.0, 2.0, 0.0, "B");
+            AttachChild(root, parentB, childB);
+            var other = AddNode(root, meshC, 9.0, 9.0, 9.0, "C");
+            AddSceneRoot(root, parentA);
+            AddSceneRoot(root, parentB);
+            AddSceneRoot(root, other);
+            var path = WriteGlb(dir, "nested.glb", root, bin.ToArray());
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(1, report.CoincidentDuplicateGroups);
+            Assert.Equal(1, report.CoincidentDuplicateNodesRemoved);
+            // the whole removed subtree counts once, not per inner duplicate
+            Assert.Equal(1, report.CoincidentDuplicateTrianglesRemoved);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var sceneRoots = Assert.IsType<JsonObject>(
+                Assert.IsType<JsonArray>(rootBack["scenes"])[0])["nodes"];
+            Assert.NotNull(sceneRoots);
+            Assert.Equal(2, sceneRoots.AsArray().Count);
+            Assert.Equal(parentA, sceneRoots.AsArray()[0]!.GetValue<int>());
+            Assert.Equal(other, sceneRoots.AsArray()[1]!.GetValue<int>());
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Animations_present_skip_the_duplicate_scan_honestly()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f);
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, meshB, 10.0, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            root["animations"] = new JsonArray
+            {
+                new JsonObject { ["channels"] = new JsonArray(), ["samplers"] = new JsonArray() },
+            };
+            var path = WriteGlb(dir, "animated.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.True(report.CoincidentDuplicateSkippedForAnimations);
+            Assert.Equal(before, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Skins_present_skip_the_duplicate_scan_honestly()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f);
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, meshB, 10.0, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            root["skins"] = new JsonArray
+            {
+                new JsonObject { ["joints"] = new JsonArray(nodeA) },
+            };
+            var path = WriteGlb(dir, "skinned.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.True(report.CoincidentDuplicateSkippedForSkins);
+            Assert.Equal(before, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Multiple_independent_groups_are_counted_separately()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA1 = AddTriangleMesh(root, bin, 0f);
+            var meshA2 = AddTriangleMesh(root, bin, 0f); // group 1 content
+            var meshD1 = AddTriangleMesh(root, bin, 3f);
+            var meshD2 = AddTriangleMesh(root, bin, 3f); // group 2 content
+            var nodeA1 = AddNode(root, meshA1, 1.0, 0.0, 0.0, "A1");
+            var nodeA2 = AddNode(root, meshA2, 1.0, 0.0, 0.0, "A2");
+            var nodeD1 = AddNode(root, meshD1, 2.0, 0.0, 0.0, "D1");
+            var nodeD2 = AddNode(root, meshD2, 2.0, 0.0, 0.0, "D2");
+            AddSceneRoot(root, nodeA1);
+            AddSceneRoot(root, nodeA2);
+            AddSceneRoot(root, nodeD1);
+            AddSceneRoot(root, nodeD2);
+            var path = WriteGlb(dir, "two-groups.glb", root, bin.ToArray());
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(2, report.CoincidentDuplicateGroups);
+            Assert.Equal(2, report.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(2, report.CoincidentDuplicateTrianglesRemoved);
+
+            var (rootBack, _) = ReadGlbBack(path);
+            var sceneRoots = Assert.IsType<JsonObject>(
+                Assert.IsType<JsonArray>(rootBack["scenes"])[0])["nodes"];
+            Assert.NotNull(sceneRoots);
+            Assert.Equal(2, sceneRoots.AsArray().Count);
+            Assert.Equal(nodeA1, sceneRoots.AsArray()[0]!.GetValue<int>());
+            Assert.Equal(nodeD1, sceneRoots.AsArray()[1]!.GetValue<int>());
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Second_run_after_duplicate_removal_is_a_byte_identical_noop()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f);
+            var nodeA = AddNode(root, meshA, 10.0, 0.0, 0.0, "copyA");
+            var nodeB = AddNode(root, meshB, 10.0, 0.0, 0.0, "copyB");
+            AddSceneRoot(root, nodeA);
+            AddSceneRoot(root, nodeB);
+            var path = WriteGlb(dir, "twice.glb", root, bin.ToArray());
+
+            Assert.True(GlbTidier.TidyFile(path).Changed);
+            var afterFirst = File.ReadAllBytes(path);
+
+            var second = GlbTidier.TidyFile(path);
+
+            Assert.False(second.Changed);
+            Assert.Equal(0, second.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(0, second.NormalsGeneratedPrimitives);
+            Assert.Equal(0, second.MetallicSanitizedMaterials);
+            Assert.Equal(afterFirst, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Removing_a_copy_can_cascade_within_one_run()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            // Environment(0) and Cell(1) are identical empty scene roots; Cell
+            // also holds one identical empty child (Dup). Round 1 removes Dup
+            // (child of Cell); after pruning that child list, Cell itself
+            // becomes an identical empty root and must be removed in the same
+            // tidy run once the scan converges internally.
+            var environment = AddNode(root, null, 0.0, 0.0, 0.0, "Environment");
+            var cell = AddNode(root, null, 0.0, 0.0, 0.0, "StandardCommentScreenCell");
+            var duplicate = AddNode(root, null, 0.0, 0.0, 0.0, "Dup");
+            AttachChild(root, cell, duplicate);
+            AddSceneRoot(root, environment);
+            AddSceneRoot(root, cell);
+            var path = WriteGlb(dir, "cascade.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.True(report.Changed);
+            Assert.Equal(2, report.CoincidentDuplicateGroups);
+            Assert.Equal(2, report.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(0, report.CoincidentDuplicateTrianglesRemoved);
+
+            var afterFirst = File.ReadAllBytes(path);
+
+            var second = GlbTidier.TidyFile(path);
+
+            Assert.False(second.Changed);
+            Assert.Equal(0, second.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(afterFirst, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    [Fact]
+    public void Subtree_content_differences_are_kept_untouched()
+    {
+        var dir = TempDir();
+        try
+        {
+            var (root, bin) = NewSceneFixture();
+            var meshA = AddTriangleMesh(root, bin, 0f);
+            var meshB = AddTriangleMesh(root, bin, 0f); // parents get same mesh content
+            var parentA = AddNode(root, meshA, 0.0, 0.0, 0.0, "P1");
+            var childA = AddNode(root, meshA, 0.0, 2.0, 0.0, "A");
+            AttachChild(root, parentA, childA);
+            var parentB = AddNode(root, meshB, 0.0, 0.0, 0.0, "P2");
+            var childB = AddNode(root, meshB, 0.0, 3.0, 0.0, "B"); // child placement differs
+            AttachChild(root, parentB, childB);
+            AddSceneRoot(root, parentA);
+            AddSceneRoot(root, parentB);
+            var path = WriteGlb(dir, "content-drift.glb", root, bin.ToArray());
+            var before = File.ReadAllBytes(path);
+
+            var report = GlbTidier.TidyFile(path);
+
+            Assert.False(report.Changed);
+            Assert.Equal(0, report.CoincidentDuplicateNodesRemoved);
+            Assert.Equal(before, File.ReadAllBytes(path));
         }
         finally
         {

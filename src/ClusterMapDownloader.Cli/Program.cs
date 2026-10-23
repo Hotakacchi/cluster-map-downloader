@@ -137,6 +137,34 @@ internal static class Program
                               "material(s) without a metallicRoughness texture");
                 }
 
+                if (report.CoincidentDuplicateNodesRemoved > 0)
+                {
+                    parts.Add($"removed {report.CoincidentDuplicateNodesRemoved} coincident " +
+                              $"duplicate node(s) ({report.CoincidentDuplicateGroups} group(s), " +
+                              $"{report.CoincidentDuplicateTrianglesRemoved} triangle(s))");
+                }
+
+                var skips = new List<string>();
+                if (report.CoincidentDuplicateSkippedForAnimations)
+                {
+                    skips.Add("duplicate scan skipped: animations present");
+                }
+
+                if (report.CoincidentDuplicateSkippedForSkins)
+                {
+                    skips.Add("duplicate scan skipped: skins present");
+                }
+
+                if (report.CoincidentDuplicateSkippedUnsupported)
+                {
+                    skips.Add("duplicate scan skipped: unsupported accessor layout");
+                }
+
+                if (skips.Count > 0)
+                {
+                    parts.Add(string.Join("; ", skips));
+                }
+
                 Console.Out.WriteLine(report.Changed
                     ? $"[tidy] {Path.GetFileName(report.File)}: {string.Join("; ", parts)} " +
                       $"({report.BytesBefore} -> {report.BytesAfter} bytes)"
@@ -390,9 +418,11 @@ internal static class Program
                          entry request, room-enter) to list and download that single
                          world's AssetBundles. See docs/RESEARCH.md and README.md.
               metadata   Same as download, but stops after metadata/venue output.
-              tidy-glb   Regenerate missing vertex normals in exported GLB scene
-                         files (run automatically by scripts/convert-bundle.ps1;
-                         see README section 7).
+              tidy-glb   Repair exported GLB scene files in place: regenerate missing
+                         vertex normals, force metallic=0 on texture-less materials,
+                         and detach exact coincident duplicate subtrees (vehicles
+                         stacked at one spot). Runs automatically via
+                         scripts/convert-bundle.ps1; see README section 7.
 
             Options:
               -o, --output <dir>       Output directory (default .\output\<worldId> under CWD)
